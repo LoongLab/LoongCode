@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { builtinModules } from "node:module"
 import { join, relative } from "node:path"
 
 /**
@@ -92,8 +93,19 @@ describe("runtime independence", () => {
 
   const BUNDLE = join(PACKAGES, "cli/dist/loongcode.js")
 
-  // Only meaningful once a build has run; CI builds before testing.
-  test.skipIf(!existsSync(BUNDLE))("the built bundle imports nothing but Node builtins", () => {
+  /**
+   * The bundle is a build artifact and is not in version control, so it can be
+   * older than the sources beside it — asserting a property of a stale build
+   * would be a false failure. A missing or stale bundle is skipped; CI builds
+   * before testing, so the check does run there.
+   */
+  function bundleIsCurrent(): boolean {
+    if (!existsSync(BUNDLE)) return false
+    const builtAt = statSync(BUNDLE).mtimeMs
+    return productionSources().every(file => statSync(file).mtimeMs <= builtAt)
+  }
+
+  test.skipIf(!bundleIsCurrent())("the built bundle imports nothing but Node builtins", () => {
     const source = readFileSync(BUNDLE, "utf-8")
     const specifiers = [...source.matchAll(/from\s*["']([^"']+)["']/g)]
       .map(match => match[1]!)
@@ -107,9 +119,5 @@ describe("runtime independence", () => {
   })
 })
 
-const NODE_BUILTINS = new Set([
-  "assert", "buffer", "child_process", "crypto", "dns", "events", "fs", "http",
-  "https", "module", "net", "os", "path", "perf_hooks", "process", "readline",
-  "stream", "string_decoder", "timers", "tty", "url", "util", "v8", "vm",
-  "worker_threads", "zlib",
-])
+/** Node's own list, so builtin subpaths (`fs/promises`) count as builtins. */
+const NODE_BUILTINS = new Set(builtinModules.map(name => name.replace(/^node:/, "")))
