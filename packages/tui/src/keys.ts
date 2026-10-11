@@ -712,25 +712,24 @@ function matchesModifyOtherKeys(data: string, expectedKeycode: number, expectedM
 	return parsed.codepoint === expectedKeycode && parsed.modifier === expectedModifier;
 }
 
-function isWindowsTerminalSession(): boolean {
-	return (
-		Boolean(process.env.WT_SESSION) && !process.env.SSH_CONNECTION && !process.env.SSH_CLIENT && !process.env.SSH_TTY
-	);
-}
-
 /**
- * Raw 0x08 (BS) is ambiguous in legacy terminals.
+ * Raw Backspace bytes: `0x7f` (DEL, the POSIX encoding) and `0x08` (BS, what
+ * Windows consoles and some legacy terminals send). Both mean plain Backspace.
  *
- * - Windows Terminal uses it for Ctrl+Backspace.
- * - Some legacy terminals and tmux setups send it for plain Backspace.
- *
- * Prefer explicit Kitty / CSI-u / modifyOtherKeys sequences whenever they are
- * available. Fall back to a Windows Terminal heuristic only for raw BS bytes.
+ * A raw `0x08` used to be read as Ctrl+Backspace whenever `WT_SESSION` was set,
+ * on the theory that Windows Terminal sends it for that key. That made the
+ * meaning of a byte depend on an *inherited* environment variable rather than
+ * on the byte stream: in any session where `WT_SESSION` survives into a terminal
+ * that sends `0x08` for plain Backspace (mintty/Git Bash, multiplexers, IDE
+ * terminals started from a Windows Terminal shell), Backspace decoded as
+ * Ctrl+Backspace — which no binding wants — and the editor discarded it, so the
+ * key deleted nothing. Ctrl+Backspace is still distinguishable where the
+ * terminal can express it at all: those terminals send an explicit Kitty CSI-u
+ * or modifyOtherKeys sequence, handled below and unaffected by this.
  */
 function matchesRawBackspace(data: string, expectedModifier: number): boolean {
-	if (data === "\x7f") return expectedModifier === 0;
-	if (data !== "\x08") return false;
-	return isWindowsTerminalSession() ? expectedModifier === MODIFIERS.ctrl : expectedModifier === 0;
+	if (data !== "\x7f" && data !== "\x08") return false;
+	return expectedModifier === 0;
 }
 
 // =============================================================================
@@ -1283,8 +1282,7 @@ export function parseKey(data: string): string | undefined {
 	if (data === "\r" || (!_kittyProtocolActive && data === "\n") || data === "\x1bOM") return "enter";
 	if (data === "\x00") return "ctrl+space";
 	if (data === " ") return "space";
-	if (data === "\x7f") return "backspace";
-	if (data === "\x08") return isWindowsTerminalSession() ? "ctrl+backspace" : "backspace";
+	if (data === "\x7f" || data === "\x08") return "backspace";
 	if (data === "\x1b[Z") return "shift+tab";
 	if (!_kittyProtocolActive && data === "\x1b\r") return "alt+enter";
 	if (!_kittyProtocolActive && data === "\x1b ") return "alt+space";

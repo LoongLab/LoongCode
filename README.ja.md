@@ -154,7 +154,7 @@ loongcode -c -p "見つけた問題を修正して" /path/to/project
 
 ## 現在の状況
 
-**状況: 初期の実験的開発段階。** LoongCode は現在活発に開発中です。現在のバージョンは v0.1.0 です。含まれる内容は [CHANGELOG.md](CHANGELOG.md) を参照してください。
+**状況: 初期の実験的開発段階。** LoongCode は現在活発に開発中です。現在のバージョンは v0.1.1 です。含まれる内容は [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
 ## ライセンス
 
