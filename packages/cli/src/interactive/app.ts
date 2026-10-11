@@ -231,6 +231,14 @@ function truncateForRow(text: string): string {
 const NO_MODEL_NOTICE = "No model is active — use /model to choose or add one."
 
 /**
+ * The two answers the gate's recovery picker can give. Control-character
+ * prefixed, so neither can collide with a value the selector carries for a
+ * model id — the same convention `/model` uses for its own actions.
+ */
+const SETUP_AGAIN = "\u0000setup:again"
+const SETUP_EXIT = "\u0000setup:exit"
+
+/**
  * Whether a model is ready to run.
  *
  * Three outcomes, never two. "Nothing is configured" and "the configuration
@@ -297,6 +305,16 @@ export class LoongCodeTui {
 	 */
 	private readonly warning = new Container()
 	private readonly editor: Editor
+	/**
+	 * The layout's composer slot.
+	 *
+	 * It holds the editor in the normal phase, and the setup state in its place
+	 * while the gate is closed — so there is no composer to type a task into
+	 * before a model exists. The editor is put back for the duration of a
+	 * prompt, because the credential prompts are typed into it, and it is
+	 * swapped out again the moment the prompt resolves.
+	 */
+	private readonly editorSlot = new Container()
 	private readonly footerRow1 = new FooterLineView()
 	private readonly footerRow2 = new FooterLineView()
 	/** Bottom-attached transient picker, rendered directly above the composer. */
@@ -311,6 +329,30 @@ export class LoongCodeTui {
 	 * cached one.
 	 */
 	private readiness: ModelReadiness | undefined
+	/**
+	 * Which interface this application is in.
+	 *
+	 * `setup` is the gate: the normal working interface — transcript, composer,
+	 * commands, shortcuts — is not reachable while it is open, and only a
+	 * FRESH readiness check that returns `ready` closes it. Two phases and one
+	 * loop; no state-machine framework.
+	 */
+	private phase: "normal" | "setup" = "normal"
+	/**
+	 * Why the gate is closed — for COPY only. No decision reads it: every pass
+	 * of the setup loop re-derives the state from a fresh reading, so a stale
+	 * value here can mis-word a sentence and nothing else.
+	 */
+	private setupReason: "missing" | "error" | "view" = "missing"
+	/**
+	 * A task that was typed while a model was available and held back because
+	 * the model stopped being available. Its full text is kept here — never in
+	 * durable storage — and it is restored to the composer only once the normal
+	 * interface is genuinely back. It is never run automatically.
+	 */
+	private pendingTask: string | null = null
+	/** Set once the user has chosen to leave setup; stops the setup loop. */
+	private exiting = false
 	private running = false
 	/**
 	 * True for exactly the lifetime of a manual `/compact`. Application-owned:
@@ -382,7 +424,7 @@ export class LoongCodeTui {
 			status: this.status,
 			warning: this.warning,
 			picker: this.picker,
-			editor: this.editor,
+			editor: this.editorSlot,
 			footerRow1: this.footerRow1,
 			footerRow2: this.footerRow2,
 		})
@@ -392,25 +434,39 @@ export class LoongCodeTui {
 		this.tui.addInputListener(data => this.handleGlobalInput(data))
 
 		this.commandContext = this.buildCommandContext()
-		this.replaySession()
-		this.updateWarning()
 
 		// The startup state, stated once and only when there is something to
 		// state. It is never re-emitted: the footer carries the fact from here
 		// on, and a notice repeated at every refresh would be noise. An absent
-		// readiness means the caller did not resolve one, which is not a fact
-		// about the model — so it says nothing rather than guessing.
+		// readiness means the caller did not resolve one — which is not a fact
+		// about the model, so it neither closes the gate nor says anything.
 		this.readiness = options.readiness
-		if (options.readiness?.kind === "missing") {
-			this.chat.addChild(notice(NO_MODEL_NOTICE))
-		} else if (options.readiness?.kind === "error") {
-			this.chat.addChild(errorNotice(options.readiness.message))
+		this.phase = options.readiness !== undefined && options.readiness.kind !== "ready" ? "setup" : "normal"
+		if (options.readiness?.kind === "error") this.setupReason = "error"
+
+		if (this.phase === "setup") {
+			// The gate is closed, so the workspace view is never built: no
+			// resumed history is replayed, no session warning is rendered, and
+			// the composer is replaced by the setup state. What appears here is
+			// setup messaging and the configuration error, and nothing else.
+			if (options.readiness?.kind === "missing") {
+				this.chat.addChild(notice(NO_MODEL_NOTICE))
+			} else if (options.readiness?.kind === "error") {
+				this.chat.addChild(errorNotice(options.readiness.message))
+			}
+		} else {
+			this.replaySession()
+			this.updateWarning()
 		}
 		// A path that cannot be used is reported before the first tool call
 		// rather than discovered by it. Nothing is blocked and nothing is
 		// substituted: the session keeps the directory it was given.
 		const workspace = workspaceIssue(this.session.cwd)
 		if (workspace !== null) this.chat.addChild(errorNotice(workspace))
+
+		// The composer slot is filled before the first frame: the editor in the
+		// normal phase, the setup state while the gate is closed.
+		this.updateEditorSlot()
 
 		// The footer describes the session that is open, including the runs it
 		// recorded in an earlier process; nothing here is invented to fill a
@@ -429,7 +485,7 @@ export class LoongCodeTui {
 	 */
 	private transcriptViewportHeight(): number {
 		const chromeRows = fixedChromeRows(
-			[this.status, this.warning, this.picker, this.editor, this.footerRow1, this.footerRow2],
+			[this.status, this.warning, this.picker, this.editorSlot, this.footerRow1, this.footerRow2],
 			this.tui.terminal.columns,
 		)
 		return Math.max(0, this.tui.terminal.rows - chromeRows)
@@ -490,6 +546,9 @@ export class LoongCodeTui {
 						// a secret in the clear.
 						this.editor.setText("")
 						this.editor.setMasked(false)
+						// The prompt is over: while the gate is closed the editor
+						// leaves the layout again with it.
+						this.updateEditorSlot()
 						this.tui.setFocus(this.editor)
 						resolve(value)
 					} }
@@ -499,6 +558,9 @@ export class LoongCodeTui {
 					// A rename is seeded with the current title so the user edits
 					// rather than retypes it; other prompts start empty.
 					this.editor.setText(options?.initialValue ?? "")
+					// A prompt is typed into the editor, so the editor is in the
+					// layout for exactly as long as the prompt is open.
+					this.updateEditorSlot()
 					this.status.addChild(new Text(ansi.bold(label), 1, 0))
 					this.tui.setFocus(this.editor)
 					this.tui.requestRender()
@@ -657,6 +719,14 @@ export class LoongCodeTui {
 			}
 			return undefined
 		}
+		// While the gate is closed these two act on a workspace that is not open
+		// yet — tool output that is not rendered, a model set the user has not
+		// been admitted to. They are consumed and change nothing. Escape,
+		// Ctrl+C and Ctrl+D above are deliberately NOT gated: they are how a
+		// prompt is cancelled and how the session is left.
+		const gated = matchesKey(data, "ctrl+o") || matchesKey(data, "ctrl+p")
+		if (this.phase === "setup" && gated) return { consume: true }
+
 		if (matchesKey(data, "ctrl+o")) {
 			this.toolsExpanded = !this.toolsExpanded
 			for (const component of this.chat.children) {
@@ -714,9 +784,15 @@ export class LoongCodeTui {
 		}
 	}
 
-	private shutdown(): never {
+	/**
+	 * Leaves the fullscreen screen and exits. `note`, when given, is written to
+	 * stderr *after* the terminal is restored — the transcript is gone by then,
+	 * so this is the only place a parting message can still be read.
+	 */
+	private shutdown(note?: string): never {
 		this.abort?.abort()
 		this.tui.stop()
+		if (note !== undefined) process.stderr.write(note)
 		process.exit(0)
 	}
 
@@ -733,6 +809,15 @@ export class LoongCodeTui {
 
 		const text = raw.trim()
 		if (text.length === 0) return
+
+		// The gate, as the one place every submission funnels through: the
+		// composer, `submitTask`, and prompt templates all arrive here, and so
+		// does every command — `/session`, `/rewind`, `/new`, `/compact`,
+		// `/copy`, `/help`. While setup is incomplete there is no working
+		// interface to submit from, so nothing submitted can run. The prompt
+		// branch above is deliberately before this: a credential prompt is part
+		// of setup, not a way around it.
+		if (this.phase === "setup") return
 
 		if (text.startsWith("/")) {
 			const spaceIdx = text.indexOf(" ")
@@ -792,7 +877,10 @@ export class LoongCodeTui {
 		// model, and never open setup for a model that is already configured.
 		const readiness = await modelReadiness(this.options.agent)
 		if (readiness.kind !== "ready") {
-			await this.setUpModel(text, readiness)
+			// The model went away under a session that had one. The gate closes
+			// again and the task is held, not run: it goes back to the composer
+			// only once setup succeeds, and only the user submits it.
+			this.enterSetupPhase(text)
 			return
 		}
 
@@ -815,34 +903,212 @@ export class LoongCodeTui {
 	 * reachable after the editor has cleared itself, and its prompts own the
 	 * editor while they are open.
 	 */
-	private async setUpModel(task: string, readiness: ModelReadiness): Promise<void> {
+	/**
+	 * The gate, closed: no model is active, so the normal interface is not
+	 * reachable. The setup flow runs here and only here.
+	 *
+	 * Every pass begins with a FRESH reading — never the stored reason, never a
+	 * command's return value (the `/model` command returns nothing; it reports
+	 * through notices) — so a retry after an external fix goes straight through,
+	 * a configuration that broke in the meantime is reported, and a still-missing
+	 * model comes back to the user's choice rather than reopening on its own.
+	 *
+	 * Total by construction: this runs on a promise nobody awaits (`start()` and
+	 * `submit` both hand it off), so a rejection would end the process. The last
+	 * resort is an exit, which is the closed direction.
+	 */
+	private async runSetup(): Promise<void> {
+		let firstAttempt = true
+		let shownError: string | null = null
 		try {
-			if (readiness.kind === "error") {
-				// Not an unconfigured installation: the configuration exists and
-				// cannot be read. The wizard could not save either — every write
-				// path loads the file first — so the honest answer is to report
-				// the file and leave it untouched.
-				this.chat.addChild(errorNotice(readiness.message))
-				return
-			}
+			while (this.phase === "setup" && !this.exiting) {
+				const readiness = await modelReadiness(this.options.agent)
 
-			const command = findCommand("model")
-			try {
-				await command?.execute(this.commandContext, "")
-			} catch (error) {
-				// The same contract as any other command: a failure is a notice.
-				this.chat.addChild(errorNotice(
-					`/model failed: ${error instanceof Error ? error.message : String(error)}`,
-				))
+				if (readiness.kind === "ready") {
+					if (this.enterNormal()) return
+					// The model is active but the workspace view could not be
+					// opened. That is a failure like any other: the user decides,
+					// and the loop never spins on it.
+					this.setupReason = "view"
+					this.updateEditorSlot()
+					if (!(await this.offerRecovery("Retry"))) return
+					firstAttempt = false
+					continue
+				}
+
+				this.setupReason = readiness.kind === "error" ? "error" : "missing"
+				this.updateEditorSlot()
+				if (readiness.kind === "error" && readiness.message !== shownError) {
+					shownError = readiness.message
+					// Not an unconfigured installation: the configuration exists
+					// and cannot be read. Naming the file is the whole remedy —
+					// it is preserved, never repaired or replaced.
+					this.chat.addChild(errorNotice(readiness.message))
+					this.tui.requestRender()
+				}
+
+				if (!firstAttempt) {
+					// The previous attempt produced no model — cancelled, the
+					// save failed, or the file is still broken. Never reopen on
+					// our own: the user chooses, and leaving exits.
+					const label = readiness.kind === "error" ? "Retry" : "Set up a model"
+					const description = readiness.kind === "error"
+						? "after correcting or removing that file"
+						: undefined
+					if (!(await this.offerRecovery(label, description))) return
+				}
+				firstAttempt = false
+
+				if (readiness.kind === "missing") await this.runModelCommand()
 			}
-			await this.refreshFooterData()
-			// Still nothing to run with: the user cancelled, or the save failed
-			// and `addModel` has already said why. Restate the standing fact so
-			// the situation is never ambiguous.
-			if (this.readiness?.kind === "missing") this.chat.addChild(notice(NO_MODEL_NOTICE))
-		} finally {
-			this.restorePrompt(task)
+		} catch (error) {
+			// Nothing in the loop is expected to throw — the reading is total and
+			// the command reports its own failures — so this is a last resort.
+			// It ends the session rather than leaving a gate that might be open.
+			this.chat.addChild(errorNotice(`model setup failed: ${error instanceof Error ? error.message : String(error)}`))
 			this.tui.requestRender()
+			this.exitFromSetup()
+		}
+	}
+
+	/**
+	 * Asks what to do after an attempt that did not produce a working session.
+	 *
+	 * This is the only way the flow ever repeats: the first attempt is
+	 * automatic, every later one is the user's decision, and leaving the dialog
+	 * ends the session. Returns true to try again.
+	 */
+	private async offerRecovery(againLabel: string, againDescription?: string): Promise<boolean> {
+		const choice = await this.commandContext.pick("Model setup", [
+			{ value: SETUP_AGAIN, label: againLabel, description: againDescription },
+			{ value: SETUP_EXIT, label: "Exit", description: "LoongCode cannot run tasks without a model" },
+		])
+		if (choice === SETUP_AGAIN) return true
+		this.exitFromSetup()
+		return false
+	}
+
+	/** Runs the existing `/model` command — the only model surface there is. */
+	private async runModelCommand(): Promise<void> {
+		const command = findCommand("model")
+		try {
+			await command?.execute(this.commandContext, "")
+		} catch (error) {
+			// The same contract as any other command: a failure is a notice.
+			this.chat.addChild(errorNotice(
+				`/model failed: ${error instanceof Error ? error.message : String(error)}`,
+			))
+		}
+	}
+
+	/**
+	 * Opens the gate, or reports why it could not be opened.
+	 *
+	 * Everything that can fail happens FIRST — building the workspace view — and
+	 * the commit that follows is synchronous and calls nothing fallible, so a
+	 * failure leaves the application in setup with nothing half-applied, and no
+	 * input event can interleave with a partial transition. Returns false if the
+	 * interface could not be restored.
+	 */
+	private enterNormal(): boolean {
+		let transcript: Component[]
+		let warning: Component | null
+		try {
+			transcript = this.buildTranscript()
+			warning = this.buildWarning()
+		} catch (error) {
+			this.chat.addChild(errorNotice(
+				`could not open the workspace view: ${error instanceof Error ? error.message : String(error)}`,
+			))
+			this.tui.requestRender()
+			return false
+		}
+
+		// The commit: no `await`, nothing that can throw.
+		this.chat.clear()
+		for (const component of transcript) this.chat.addChild(component)
+		this.warning.clear()
+		if (warning !== null) this.warning.addChild(warning)
+		this.editor.disableSubmit = false
+		this.phase = "normal"
+		// The task held back while the model was unavailable goes back to the
+		// composer — for the user to submit, never to be run here.
+		this.restorePrompt(this.pendingTask ?? "")
+		this.pendingTask = null
+		this.updateEditorSlot()
+		this.tui.setFocus(this.editor)
+		this.updateFooter()
+		void this.refreshFooterData()
+		this.tui.requestRender()
+		return true
+	}
+
+	/**
+	 * Closes the gate and runs setup. `task` is held, never run.
+	 *
+	 * Reached mid-session when the model goes away, so the workspace that was
+	 * open has to go with it: its transcript, its warning row and its footer
+	 * figures are all cleared, and the footer is re-rendered from the setup
+	 * state. Leaving any of them would show the workspace behind a gate that
+	 * is supposed to be shut.
+	 */
+	private enterSetupPhase(task: string | null): void {
+		if (task !== null) this.pendingTask = task
+		this.phase = "setup"
+		this.chat.clear()
+		this.warning.clear()
+		this.chat.addChild(notice(NO_MODEL_NOTICE))
+		this.updateEditorSlot()
+		this.updateFooter()
+		this.tui.requestRender()
+		void this.runSetup()
+	}
+
+	/**
+	 * Leaves the session from setup.
+	 *
+	 * A task held back by the gate is not run and is not stored anywhere — the
+	 * composer is not durable — so the user is told plainly, on the terminal
+	 * they return to, that it was neither executed nor saved.
+	 */
+	private exitFromSetup(): void {
+		this.exiting = true
+		this.shutdown(this.pendingTask === null
+			? "loongcode: model setup was cancelled.\n"
+			: "loongcode: model setup was cancelled — your task was not run and has not been saved.\n")
+	}
+
+	/**
+	 * Fills the composer slot: the editor in the normal phase, and while the
+	 * gate is closed the setup state in its place — except during a prompt,
+	 * whose value is typed into the editor.
+	 */
+	private updateEditorSlot(): void {
+		this.editorSlot.clear()
+		if (this.phase === "normal" || this.askState !== null) {
+			// A prompt is typed into this editor and submitted with Enter, so
+			// submit is enabled for exactly the states that show it.
+			this.editor.disableSubmit = false
+			this.editorSlot.addChild(this.editor)
+			return
+		}
+		// The composer is not on screen: its Enter does nothing even if some
+		// path focuses it. The submission guard is the real enforcement; this
+		// only keeps the component honest.
+		this.editor.disableSubmit = true
+		const state = this.setupReason === "error"
+			? "Correct the model configuration to continue."
+			: this.setupReason === "view"
+				? "Your model is ready, but the workspace could not be opened."
+				: "Set up a model to continue."
+		this.editorSlot.addChild(new Text(`  ${ansi.gray(state)}`, 1, 0))
+		if (this.pendingTask !== null) {
+			// The task is held, not lost: say so where the composer would be.
+			this.editorSlot.addChild(new Text(
+				`  ${ansi.gray(`Your task is saved: ${truncateForRow(this.pendingTask)}`)}`,
+				1,
+				0,
+			))
 		}
 	}
 
@@ -1027,6 +1293,11 @@ export class LoongCodeTui {
 			modelId: this.modelId,
 			limits: this.modelLimits,
 			modelMissing: this.readiness?.kind === "missing",
+			// While the gate is closed the footer describes setup, not a
+			// workspace that is not open: the projection drops everything the
+			// workspace produced, including the run figures seeded from a
+			// previous session. They come back with the transition.
+			setup: this.phase === "setup",
 			compactThresholdPct: this.compactThresholdPct,
 			lastCallUsage: this.display.lastCallUsage,
 			runRequests: this.display.runRequests,
@@ -1049,10 +1320,17 @@ export class LoongCodeTui {
 	 */
 	private updateWarning(): void {
 		this.warning.clear()
+		const line = this.buildWarning()
+		if (line !== null) this.warning.addChild(line)
+	}
+
+	/** The session warning row, or null when the session has nothing to warn
+	 *  about. Built separately so opening the gate can construct it before it
+	 *  commits to anything. */
+	private buildWarning(): Component | null {
 		const note = this.session.rewind
-		if (note !== null && note.shellTurns > 0) {
-			this.warning.addChild(new Text(`  ${ansi.yellow(shellWarningText(note))}`, 1, 0))
-		}
+		if (note === null || note.shellTurns === 0) return null
+		return new Text(`  ${ansi.yellow(shellWarningText(note))}`, 1, 0)
 	}
 
 	private async refreshFooterData(): Promise<void> {
@@ -1504,6 +1782,18 @@ export class LoongCodeTui {
 	// ── session replay ───────────────────────────────────────────────
 
 	private replaySession(): void {
+		for (const component of this.buildTranscript()) this.chat.addChild(component)
+	}
+
+	/**
+	 * The workspace view as components, built but not applied.
+	 *
+	 * Separate from `replaySession` so entering the normal phase can build
+	 * everything that might fail before it commits to anything: a failure here
+	 * leaves the application in setup rather than half-way into a workspace.
+	 */
+	private buildTranscript(): Component[] {
+		const components: Component[] = []
 		const resultsByCallId = new Map<string, { ok: boolean; result: string }>()
 		for (const message of this.session.messages) {
 			if (message.role !== "tool") continue
@@ -1519,20 +1809,35 @@ export class LoongCodeTui {
 		}
 		for (const message of this.session.messages) {
 			for (const component of replayMessage(message, resultsByCallId)) {
-				this.chat.addChild(component)
+				components.push(component)
 			}
 		}
 		if (this.session.needsRecovery()) {
-			this.chat.addChild(notice("interrupted run detected — it will be reconciled on the next task"))
+			components.push(notice("interrupted run detected — it will be reconciled on the next task"))
 		}
+		return components
 	}
 
 	// ── lifecycle ────────────────────────────────────────────────────
 
+	/**
+	 * Starts the interface.
+	 *
+	 * The gate opens here, not in the constructor: the terminal's input handler
+	 * is only installed by `tui.start()` (`TuiBase.start`), so an interactive
+	 * flow begun earlier would render onto the normal screen before the
+	 * alternate screen is entered — and then wait forever for a keystroke that
+	 * could never arrive.
+	 */
 	start(): void {
 		this.tui.start()
-		this.tui.setFocus(this.editor)
 		this.updateFooter()
+		if (this.phase === "setup") {
+			this.tui.requestRender()
+			void this.runSetup()
+			return
+		}
+		this.tui.setFocus(this.editor)
 	}
 
 	stop(): void {

@@ -76,9 +76,10 @@ cd ~/my-project
 loongcode
 ```
 
-On first launch LoongCode tells you no model is active. Type a task and it
-walks you through the setup first, or run `/model` yourself to choose one you
-have already configured or add a new one.
+On first launch LoongCode sets up a model before the workspace opens. It tells
+you no model is active and opens the setup flow, where you choose one you have
+already configured or add a new one (protocol, endpoint, model name, API key).
+The workspace becomes available once a model is active; cancelling setup exits.
 
 ### Running from source
 

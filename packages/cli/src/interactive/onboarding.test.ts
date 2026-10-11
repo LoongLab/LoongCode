@@ -25,6 +25,8 @@ import { openaiChunk, sse, startMockProvider } from "../../../model/src/test-sup
 
 const ENTER = "\r"
 const ESC = "\x1b"
+const DOWN = "\x1b[B"
+const UP = "\x1b[A"
 
 interface Tty {
 	readonly terminal: Terminal
@@ -109,9 +111,9 @@ const flush = async (times = 8): Promise<void> => {
 }
 
 /** Mounts the app the way `runCli` does: readiness resolved before construction. */
-async function mount(options: { workspace?: string } = {}): Promise<Harness> {
+async function mount(options: { workspace?: string; session?: Session } = {}): Promise<Harness> {
 	const agent = new LoongCode({ sessionsDir })
-	const session = agent.createSession(options.workspace ?? ws)
+	const session = options.session ?? agent.createSession(options.workspace ?? ws)
 	const tty = createTerminal()
 	const app = new LoongCodeTui({
 		agent,
@@ -135,6 +137,52 @@ function screen(h: Harness): string {
 /** The composer's current text. */
 function composer(h: Harness): string {
 	return (h.app as unknown as { editor: { getText(): string } }).editor.getText()
+}
+
+/** Which interface the application is in: `normal` or `setup`. */
+function phaseOf(h: Harness): string {
+	return (h.app as unknown as { phase: string }).phase
+}
+
+/** Whether the composer is the component the bottom slot renders. */
+function slotHoldsEditor(h: Harness): boolean {
+	const app = h.app as unknown as { editorSlot: { children: unknown[] }; editor: unknown }
+	return app.editorSlot.children.includes(app.editor)
+}
+
+/**
+ * Records `process.exit` and stderr instead of performing them, so a test can
+ * drive a path that leaves the session. The exit is still requested — only the
+ * process is not ended — and what the caller would have seen is captured.
+ */
+function trapExit(): { codes: number[]; errors: string[]; restore: () => void } {
+	const codes: number[] = []
+	const errors: string[] = []
+	const originalExit = process.exit
+	const originalWrite = process.stderr.write
+	process.exit = ((code?: number) => {
+		codes.push(code ?? 0)
+	}) as never
+	process.stderr.write = ((chunk: unknown) => {
+		errors.push(String(chunk))
+		return true
+	}) as never
+	return {
+		codes,
+		errors,
+		restore: () => {
+			process.exit = originalExit
+			process.stderr.write = originalWrite
+		},
+	}
+}
+
+/** A command or shortcut that must do nothing while the gate is closed. */
+async function attemptBypass(h: Harness, input: string): Promise<void> {
+	h.tty.feed(input)
+	await flush()
+	h.tty.feed(ENTER)
+	await flush(16)
 }
 
 /** Submits a line the way a user does: type it, then press Enter. */
@@ -168,13 +216,20 @@ const validConfig = (endpoint: string): string => JSON.stringify({
 // AC1 / AC4 — what the first frame says
 // ---------------------------------------------------------------------------
 
-describe("startup readiness", () => {
-	test("an unconfigured installation is told how to get a model", async () => {
+describe("the gate", () => {
+	test("an unconfigured installation is put into setup and told how to get a model", async () => {
 		const h = await mount()
 		const view = screen(h)
 		expect(view).toContain("No model is active — use /model to choose or add one.")
 		// The footer states the same fact where a configured user reads a model id.
 		expect(view).toContain("no model")
+		// The gate is open: setup is on screen and the composer is not. The flow
+		// itself must have started — being merely classified as `setup` would
+		// leave the user staring at a state with nothing to do in it.
+		expect(phaseOf(h)).toBe("setup")
+		expect(view).toContain("Set up a model to continue.")
+		expect(view).toContain("Add model…")
+		expect(slotHoldsEditor(h)).toBe(false)
 		// Nothing failed, so nothing is reported as a failure.
 		expect(view).not.toContain("error:")
 		expect(rejections).toEqual([])
@@ -184,8 +239,11 @@ describe("startup readiness", () => {
 		writeModels(validConfig("http://127.0.0.1:9/v1"))
 		const h = await mount()
 		const view = screen(h)
+		expect(phaseOf(h)).toBe("normal")
 		expect(view).not.toContain("No model is active")
 		expect(view).not.toContain("no model")
+		expect(view).not.toContain("Set up a model to continue.")
+		expect(slotHoldsEditor(h)).toBe(true)
 		expect(view).toContain("probe")
 		expect(view).toContain("128k window")
 		expect(rejections).toEqual([])
@@ -199,10 +257,11 @@ describe("startup readiness", () => {
 		const view = screen(h)
 		expect(view).toContain("No model is active")
 		expect(view).toContain("no model")
+		expect(phaseOf(h)).toBe("setup")
 		expect(rejections).toEqual([])
 
-		// And the configured model is genuinely on offer: `/model` lists it.
-		await type(h, "/model")
+		// And the configured model is genuinely on offer: the setup flow opens
+		// on its own and lists it, so choosing it needs no further command.
 		const picker = screen(h)
 		expect(picker).toContain("probe")
 		expect(picker).toContain("Add model…")
@@ -215,8 +274,142 @@ describe("startup readiness", () => {
 		const view = screen(h)
 		expect(view).toContain("working directory does not exist")
 		expect(view).toContain(missing)
-		// Reported, not enforced: the footer still renders and the TUI works.
-		expect(view).toContain("Idle")
+		// Reported, not enforced: the footer still renders — with the path and
+		// the setup state, not a workspace that is not open.
+		expect(view).toContain("no model")
+		expect(view).toContain("Model setup in progress")
+		expect(rejections).toEqual([])
+	})
+
+	test("a resumed session's history stays out of sight while the gate is closed", async () => {
+		const provider = await startMockProvider(() => sse([
+			openaiChunk({ role: "assistant", content: "HISTORY-MARKER" }, null),
+			openaiChunk({}, "stop"),
+			null,
+		]))
+		try {
+			writeModels(validConfig(`${provider.url}/v1`))
+			const first = await mount()
+			await type(first, "the earlier task")
+			await flush(40)
+			expect(screen(first)).toContain("HISTORY-MARKER")
+
+			// The model goes away and the same session is mounted again, as a
+			// restart would: the transcript must not come with it.
+			rmSync(modelsFile(), { force: true })
+			const resumed = await mount({ session: first.session })
+			const view = screen(resumed)
+			expect(resumed.session.messages.length).toBeGreaterThan(0)
+			expect(view).not.toContain("HISTORY-MARKER")
+			expect(view).not.toContain("the earlier task")
+			expect(view).toContain("Set up a model to continue.")
+			expect(phaseOf(resumed)).toBe("setup")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a previous session's run statistics stay out of the setup footer", async () => {
+		const provider = await startMockProvider(() => sse([
+			openaiChunk({ role: "assistant", content: "done" }, null),
+			openaiChunk({}, "stop"),
+			null,
+		]))
+		try {
+			// A session that has genuinely run: its figures are on the footer
+			// while the workspace is open...
+			writeModels(validConfig(`${provider.url}/v1`))
+			const working = await mount()
+			await type(working, "the earlier task")
+			await flush(40)
+			expect(screen(working)).toContain("last run")
+
+			// ...and must not follow it into setup.
+			rmSync(modelsFile(), { force: true })
+			const resumed = await mount({ session: working.session })
+			const view = screen(resumed)
+			expect(phaseOf(resumed)).toBe("setup")
+			expect(view).not.toContain("last run")
+			expect(view).not.toContain("no run yet")
+			expect(view).not.toContain("Context")
+			expect(view).not.toContain("auto-compact")
+			expect(view).not.toContain("Idle")
+			// What is left is neutral and true.
+			expect(view).toContain("Model setup in progress")
+			expect(view).toContain("no model")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("the workspace's footer information returns with the transition", async () => {
+		const provider = await startMockProvider(() => sse([
+			openaiChunk({ role: "assistant", content: "done" }, null),
+			openaiChunk({}, "stop"),
+			null,
+		]))
+		try {
+			writeModels(validConfig(`${provider.url}/v1`))
+			const h = await mount()
+			// A real run first, so there are figures to withhold.
+			await type(h, "the earlier task")
+			await flush(40)
+			expect(screen(h)).toContain("last run")
+
+			// The model goes away, and the next task is held by the gate.
+			rmSync(modelsFile(), { force: true })
+			await type(h, "a held task")
+			expect(phaseOf(h)).toBe("setup")
+			expect(screen(h)).toContain("Model setup in progress")
+			expect(screen(h)).not.toContain("last run")
+
+			// Complete setup: the figures the working session showed are back,
+			// because they were never erased — only withheld.
+			h.tty.feed(ENTER) // Add model…
+			await flush(16)
+			h.tty.feed(ENTER) // the protocol
+			await flush(16)
+			h.tty.feed(`${provider.url}/v1`)
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("probe-model")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("sk-dummy-not-a-real-key")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed(ENTER) // commit: Add model
+			await flush(30)
+
+			const after = screen(h)
+			expect(phaseOf(h)).toBe("normal")
+			expect(after).toContain("last run")
+			expect(after).not.toContain("Model setup in progress")
+			expect(after).toContain("Idle")
+			expect(after).toContain("Context")
+			// And the task that was held comes back with it, unrun.
+			expect(composer(h)).toBe("a held task")
+			expect(h.session.messages.filter(m => m.role === "user").length).toBe(1)
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("the composer is not there to type into while the gate is closed", async () => {
+		const h = await mount()
+		expect(slotHoldsEditor(h)).toBe(false)
+
+		// Typing lands nowhere: no transcript line, no submission, no run.
+		await type(h, "a task with nowhere to go")
+		expect(screen(h)).not.toContain("a task with nowhere to go")
+		expect(h.session.messages.length).toBe(0)
+		expect(phaseOf(h)).toBe("setup")
 		expect(rejections).toEqual([])
 	})
 })
@@ -225,52 +418,39 @@ describe("startup readiness", () => {
 // AC2 / AC13 — a task submitted without a model
 // ---------------------------------------------------------------------------
 
-describe("a task submitted without a model", () => {
-	test("opens the existing setup flow and keeps the task on cancellation", async () => {
+describe("a model that goes away under a running session", () => {
+	/** A session that started with a working model, whose configuration is then
+	 *  removed — the only way to reach a submission without one now. */
+	async function lostModel(): Promise<Harness> {
+		writeModels(validConfig("http://127.0.0.1:9/v1"))
 		const h = await mount()
+		rmSync(modelsFile(), { force: true })
+		return h
+	}
+
+	test("closes the gate again and holds the task, without running it", async () => {
+		const h = await lostModel()
 		await type(h, "fix the failing test")
 
-		// The setup flow is the /model picker, not a second wizard.
-		expect(screen(h)).toContain("Add model…")
-
-		h.tty.feed(ESC)
-		await flush(24)
-
-		// Exactly the task: not lost, not doubled.
-		expect(composer(h)).toBe("fix the failing test")
-		// Nothing ran, and no orphan message was left in the transcript.
+		expect(phaseOf(h)).toBe("setup")
+		// The task is held and visibly so — it is not in a composer the user
+		// cannot see.
+		expect(screen(h)).toContain("Your task is saved: fix the failing test")
+		expect(composer(h)).toBe("")
 		expect(h.session.messages.length).toBe(0)
 		expect(rejections).toEqual([])
 	})
 
-	test("keeps the task when the wizard is cancelled at one of its prompts", async () => {
-		const h = await mount()
-		await type(h, "fix the failing test")
-		h.tty.feed(ENTER) // Add model…
-		await flush(16)
-		h.tty.feed(ENTER) // the protocol
-		await flush(16)
-		expect(screen(h)).toContain("endpoint (default")
-
-		h.tty.feed(ESC)
-		await flush(24)
-
-		expect(composer(h)).toBe("fix the failing test")
-		// Cancelling writes nothing at all.
-		expect(existsSync(modelsFile())).toBe(false)
-		expect(h.session.messages.length).toBe(0)
-		expect(rejections).toEqual([])
-	})
-
-	test("setup then submission: the model is saved, the task is kept, the task runs", async () => {
+	test("completing setup restores the task, and only the user runs it", async () => {
 		const provider = await startMockProvider(() => sse([
 			openaiChunk({ role: "assistant", content: "All tests pass now." }, null),
 			openaiChunk({}, "stop"),
 			null,
 		]))
 		try {
-			const h = await mount()
+			const h = await lostModel()
 			await type(h, "fix the failing test")
+			expect(phaseOf(h)).toBe("setup")
 
 			h.tty.feed(ENTER) // Add model…
 			await flush(16)
@@ -289,16 +469,16 @@ describe("a task submitted without a model", () => {
 			h.tty.feed(ENTER)
 			await flush(16)
 			h.tty.feed(ENTER) // commit: Add model
-			await flush(24)
+			await flush(30)
 
-			// The model is on disk, and the task is back in the composer,
-			// untouched — nothing runs by itself.
-			expect(existsSync(modelsFile())).toBe(true)
-			expect(JSON.parse(readFileSync(modelsFile(), "utf-8")).activeModelId).toBe("probe-model")
+			// The gate is open and the task is back in the composer — not run.
+			expect(phaseOf(h)).toBe("normal")
+			expect(slotHoldsEditor(h)).toBe(true)
 			expect(composer(h)).toBe("fix the failing test")
 			expect(h.session.messages.length).toBe(0)
+			expect(existsSync(modelsFile())).toBe(true)
 
-			// The user submits it, and it runs against the configured model.
+			// The user submits it, and only then does it run.
 			h.tty.feed(ENTER)
 			await flush(80)
 			expect(h.session.messages.length).toBeGreaterThan(0)
@@ -309,9 +489,91 @@ describe("a task submitted without a model", () => {
 		}
 	})
 
-	test("a cancelled api-key prompt leaves no secret in the composer", async () => {
+	test("cancelling exits, and says the held task was neither run nor saved", async () => {
+		const trap = trapExit()
+		try {
+			const h = await lostModel()
+			await type(h, "fix the failing test")
+			expect(phaseOf(h)).toBe("setup")
+
+			h.tty.feed(ESC) // cancel the setup flow
+			await flush(24)
+			// The setup flow does not reopen on its own: the user chooses.
+			expect(screen(h)).toContain("Exit")
+
+			h.tty.feed(DOWN)
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(24)
+
+			expect(trap.codes).toEqual([0])
+			expect(trap.errors.join("")).toContain("your task was not run and has not been saved")
+			// Never admitted to the normal interface.
+			expect(phaseOf(h)).toBe("setup")
+			expect(h.session.messages.length).toBe(0)
+			expect(rejections).toEqual([])
+		} finally {
+			trap.restore()
+		}
+	})
+})
+
+// ---------------------------------------------------------------------------
+// AC3 — the first-run path through the gate
+// ---------------------------------------------------------------------------
+
+describe("first-run setup through the gate", () => {
+	test("the wizard is offered unasked, and the normal interface follows it", async () => {
+		const provider = await startMockProvider(() => sse([
+			openaiChunk({ role: "assistant", content: "All tests pass now." }, null),
+			openaiChunk({}, "stop"),
+			null,
+		]))
+		try {
+			const h = await mount()
+			// The setup flow is the /model picker, not a second wizard, and it
+			// is already open.
+			expect(phaseOf(h)).toBe("setup")
+			expect(screen(h)).toContain("Add model…")
+
+			h.tty.feed(ENTER) // Add model…
+			await flush(16)
+			h.tty.feed(ENTER) // the protocol
+			await flush(16)
+			h.tty.feed(`${provider.url}/v1`)
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("probe-model")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("sk-dummy-not-a-real-key")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed(ENTER) // commit: Add model
+			await flush(30)
+
+			expect(phaseOf(h)).toBe("normal")
+			expect(slotHoldsEditor(h)).toBe(true)
+			expect(composer(h)).toBe("")
+			expect(JSON.parse(readFileSync(modelsFile(), "utf-8")).activeModelId).toBe("probe-model")
+			expect(h.session.messages.length).toBe(0)
+
+			// The user types their first task into a composer that now exists.
+			await type(h, "fix the failing test")
+			await flush(80)
+			expect(h.session.messages.length).toBeGreaterThan(0)
+			expect(screen(h)).toContain("All tests pass now.")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a cancelled api-key prompt leaves no secret anywhere", async () => {
 		const h = await mount()
-		await type(h, "/model")
 		h.tty.feed(ENTER) // Add model…
 		await flush(16)
 		h.tty.feed(ENTER) // the protocol
@@ -325,6 +587,9 @@ describe("a task submitted without a model", () => {
 		h.tty.feed(ENTER)
 		await flush(16)
 		expect(screen(h)).toContain("api key:")
+		// The prompt is typed into the editor, so the editor is on screen here —
+		// and only here.
+		expect(slotHoldsEditor(h)).toBe(true)
 
 		// While the prompt is open the value is masked, never echoed.
 		h.tty.feed("sk-dummy-secret-value")
@@ -335,9 +600,10 @@ describe("a task submitted without a model", () => {
 		await flush(24)
 
 		// The prompt's content belongs to the prompt: cancelling must not leave
-		// it sitting in the composer, unmasked, for the next screenshot.
+		// it sitting in a composer, unmasked, for the next screenshot.
 		expect(composer(h)).toBe("")
 		expect(screen(h)).not.toContain("sk-dummy-secret-value")
+		expect(slotHoldsEditor(h)).toBe(false)
 		expect(existsSync(modelsFile())).toBe(false)
 	})
 })
@@ -386,13 +652,19 @@ describe("an unusable configuration", () => {
 				expect(view).toMatch(testCase.expect)
 				expect(view).toContain("models.json")
 				// ...and NOT presented as an installation that simply has no
-				// model: that would invite setup the unreadable file blocks.
+				// model: that would invite the setup flow the unreadable file
+				// would then block.
 				expect(view).not.toContain("No model is active")
-				expect(rejections).toEqual([])
 
-				// Still responsive: a command is accepted and answered.
-				await type(h, "/help")
-				expect(screen(h)).toContain("/compact")
+				// The gate is closed, and the recovery on offer is retry-or-exit.
+				// The wizard is never opened here: every write path loads the
+				// file first, so it could not save.
+				expect(phaseOf(h)).toBe("setup")
+				const recovery = screen(h)
+				expect(recovery).toContain("Correct the model configuration to continue.")
+				expect(recovery).toContain("Retry")
+				expect(recovery).toContain("Exit")
+				expect(recovery).not.toContain("Add model…")
 				expect(rejections).toEqual([])
 			} finally {
 				if (testCase.unreadable === true) chmodSync(modelsFile(), 0o600)
@@ -404,16 +676,19 @@ describe("an unusable configuration", () => {
 		})
 	}
 
-	test("a task submitted against an unreadable configuration reports it and keeps the task", async () => {
-		writeModels("{ this is not json")
+	test("a configuration that breaks under a running session holds the task", async () => {
+		// The session started with a working model, which is then corrupted —
+		// the file is reported and preserved, never repaired.
+		writeModels(validConfig("http://127.0.0.1:9/v1"))
 		const h = await mount()
+		writeModels("{ this is not json")
 		await type(h, "fix the failing test")
 
 		const view = screen(h)
 		expect(view).toContain("malformed JSON")
-		// No setup is offered: it could not save.
-		expect(view).not.toContain("Add model…")
-		expect(composer(h)).toBe("fix the failing test")
+		expect(phaseOf(h)).toBe("setup")
+		// The task is held, not run and not lost.
+		expect(view).toContain("Your task is saved: fix the failing test")
 		expect(h.session.messages.length).toBe(0)
 		expect(rejections).toEqual([])
 		// Untouched, byte for byte.
@@ -473,13 +748,15 @@ describe("recovery", () => {
 // ---------------------------------------------------------------------------
 
 describe("Ctrl+P", () => {
-	test("with nothing configured it points at /model rather than miscounting", async () => {
+	test("with nothing configured it changes nothing while the gate is closed", async () => {
 		const h = await mount()
 		h.tty.feed("\x10") // ctrl+p
 		await flush(16)
 		const view = screen(h)
 		expect(view).toContain("No model is active")
 		expect(view).not.toContain("only one model configured")
+		expect(view).not.toContain("switched model")
+		expect(phaseOf(h)).toBe("setup")
 		expect(rejections).toEqual([])
 	})
 
@@ -527,6 +804,230 @@ describe("Ctrl+P", () => {
 		h.tty.feed("\x10")
 		await flush(24)
 		expect(screen(h)).toContain("switched model: second")
+		expect(rejections).toEqual([])
+	})
+})
+
+// ---------------------------------------------------------------------------
+// The gate has no bypass
+// ---------------------------------------------------------------------------
+
+describe("no bypass", () => {
+	test("every slash command is refused while the gate is closed", async () => {
+		const h = await mount()
+		for (const command of ["/help", "/session", "/rewind", "/new", "/copy", "/compact", "/model"]) {
+			await attemptBypass(h, command)
+			expect(phaseOf(h)).toBe("setup")
+			expect(h.session.messages.length).toBe(0)
+		}
+		// None of them produced its answer.
+		const view = screen(h)
+		expect(view).not.toContain("Commands:")
+		expect(view).not.toContain("nothing to rewind to")
+		expect(view).not.toContain("started a new session")
+		expect(view).not.toContain("no agent response to copy")
+		expect(rejections).toEqual([])
+	})
+
+	test("submit refuses tasks from any caller, not just the composer", async () => {
+		// The composer is not even rendered, so the callers that matter are the
+		// other two: a prompt template, and the command surface's `submitTask`.
+		const h = await mount()
+		const app = h.app as unknown as { submit(text: string): Promise<void> }
+		await app.submit("/help")
+		await app.submit("fix the failing test")
+		await flush(16)
+
+		expect(screen(h)).not.toContain("Commands:")
+		expect(h.session.messages.length).toBe(0)
+		expect(phaseOf(h)).toBe("setup")
+		expect(rejections).toEqual([])
+	})
+
+	test("the shortcuts that act on the workspace are consumed and do nothing", async () => {
+		// Two models and none active: the gate is closed, and a switch is
+		// possible — so this is a state where acting would be visible. Both
+		// shortcuts return `consume` whether or not they act, so the assertion
+		// has to be about the effect.
+		writeModels(JSON.stringify({
+			version: 1,
+			models: [configuredModel("first"), configuredModel("second")],
+			activeModelId: null,
+		}))
+		const h = await mount()
+		// Down past both models to `Add model…`, then into the wizard, which is
+		// the one state where no selector owns the keyboard and the
+		// application's own listener decides.
+		h.tty.feed(DOWN)
+		await flush(8)
+		h.tty.feed(DOWN)
+		await flush(8)
+		h.tty.feed(ENTER)
+		await flush(16)
+		h.tty.feed(ENTER) // the protocol
+		await flush(16)
+		expect(screen(h)).toContain("endpoint (default")
+
+		const app = h.app as unknown as {
+			handleGlobalInput(data: string): { consume?: boolean } | undefined
+			toolsExpanded: boolean
+		}
+		expect(app.handleGlobalInput("\x10")).toEqual({ consume: true }) // ctrl+p
+		expect(app.handleGlobalInput("\x0f")).toEqual({ consume: true }) // ctrl+o
+		await flush(16)
+
+		const view = screen(h)
+		expect(view).not.toContain("switched model")
+		expect(view).not.toContain("only one model configured")
+		expect(app.toolsExpanded).toBe(false)
+		expect(phaseOf(h)).toBe("setup")
+		expect(rejections).toEqual([])
+	})
+
+	test("the interactions setup itself needs still work", async () => {
+		writeModels(JSON.stringify({ version: 1, models: [configuredModel()], activeModelId: null }))
+		const h = await mount()
+		expect(screen(h)).toContain("probe")
+
+		// Navigation and selection: down to `Add model…`, then choose it.
+		h.tty.feed(DOWN)
+		await flush(8)
+		h.tty.feed(ENTER)
+		await flush(16)
+		expect(screen(h)).toContain("Protocol")
+		h.tty.feed(ENTER) // the protocol
+		await flush(16)
+		expect(screen(h)).toContain("endpoint (default")
+
+		// Escape cancels the prompt without answering it.
+		h.tty.feed(ESC)
+		await flush(24)
+		expect(phaseOf(h)).toBe("setup")
+		expect(existsSync(modelsFile())).toBe(true)
+		expect(rejections).toEqual([])
+	})
+
+	test("Ctrl+D still leaves the session from inside a prompt", async () => {
+		const trap = trapExit()
+		try {
+			const h = await mount()
+			h.tty.feed(ENTER) // Add model…
+			await flush(16)
+			h.tty.feed(ENTER) // the protocol
+			await flush(16)
+			expect(screen(h)).toContain("endpoint (default")
+
+			h.tty.feed("\x04") // ctrl+d — leaves rather than answering
+			await flush(16)
+			expect(trap.codes).toEqual([0])
+			expect(phaseOf(h)).toBe("setup")
+			expect(rejections).toEqual([])
+		} finally {
+			trap.restore()
+		}
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Opening the gate is all-or-nothing
+// ---------------------------------------------------------------------------
+
+describe("opening the gate", () => {
+	test("a failure while building the workspace view keeps the application in setup", async () => {
+		const provider = await startMockProvider(() => sse([
+			openaiChunk({ role: "assistant", content: "done" }, null),
+			openaiChunk({}, "stop"),
+			null,
+		]))
+		try {
+			writeModels(validConfig(`${provider.url}/v1`))
+			const h = await mount()
+			// A run first, so the footer has figures that must stay hidden.
+			await type(h, "the earlier task")
+			await flush(40)
+			expect(screen(h)).toContain("last run")
+
+			// The model goes away, so the gate closes; then the workspace view
+			// becomes unbuildable.
+			rmSync(modelsFile(), { force: true })
+			const app = h.app as unknown as { buildTranscript(): unknown[] }
+			const real = app.buildTranscript.bind(h.app)
+			let fail = true
+			app.buildTranscript = () => {
+				if (fail) throw new Error("probe: workspace view failure")
+				return real()
+			}
+
+			await type(h, "fix the failing test")
+			expect(phaseOf(h)).toBe("setup")
+			expect(screen(h)).not.toContain("last run")
+
+			// Setup succeeds — the model is active — but the interface cannot be
+			// restored. The gate stays shut.
+			h.tty.feed(ENTER) // Add model…
+			await flush(16)
+			h.tty.feed(ENTER) // the protocol
+			await flush(16)
+			h.tty.feed(`${provider.url}/v1`)
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("probe-model")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("sk-dummy-not-a-real-key")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed(ENTER) // commit: Add model
+			await flush(30)
+
+			const failed = screen(h)
+			expect(failed).toContain("probe: workspace view failure")
+			expect(phaseOf(h)).toBe("setup")
+			expect(slotHoldsEditor(h)).toBe(false)
+			// The footer stays isolated through the failed transition: the model
+			// is active, but nothing the workspace produced is reported.
+			expect(failed).toContain("Model setup in progress")
+			expect(failed).not.toContain("last run")
+			expect(failed).not.toContain("Idle")
+			expect(h.session.messages.filter(m => m.role === "user").length).toBe(1)
+			expect(rejections).toEqual([])
+
+			// And it is recoverable rather than fatal: with the failure gone,
+			// retrying opens the gate and hands the held task back.
+			fail = false
+			h.tty.feed(ENTER) // Retry, the first row
+			await flush(30)
+			expect(phaseOf(h)).toBe("normal")
+			expect(slotHoldsEditor(h)).toBe(true)
+			expect(composer(h)).toBe("fix the failing test")
+			// The footer comes back with the transition.
+			expect(screen(h)).toContain("last run")
+			expect(screen(h)).toContain("Idle")
+			expect(h.session.messages.filter(m => m.role === "user").length).toBe(1)
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("the gate cannot be opened by a configuration that is not ready", async () => {
+		// The flow re-reads on every pass: a retry after an external fix goes
+		// through, and a still-broken file does not.
+		writeModels("{ this is not json")
+		const h = await mount()
+		expect(phaseOf(h)).toBe("setup")
+		expect(screen(h)).toContain("Retry")
+
+		// Repair the file behind the application's back, then retry.
+		writeModels(validConfig("http://127.0.0.1:9/v1"))
+		h.tty.feed(ENTER) // Retry, the first row
+		await flush(30)
+
+		expect(phaseOf(h)).toBe("normal")
+		expect(slotHoldsEditor(h)).toBe(true)
 		expect(rejections).toEqual([])
 	})
 })

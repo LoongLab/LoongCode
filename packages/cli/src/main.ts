@@ -111,9 +111,9 @@ usage: loongcode [options] [workspace]
   -v, --version        print the LoongCode version
   -h, --help           show this help
 
-first run: use /model inside the TUI to configure a model
-(protocol, endpoint, model name, API key), or write
-~/.loongcode/models.json directly.`
+first run: LoongCode sets up a model before the workspace opens —
+choose one you have configured or add one (protocol, endpoint,
+model name, API key), or write ~/.loongcode/models.json directly.`
 }
 
 /**
@@ -158,8 +158,9 @@ export async function runCli(argv: string[], io: CliIO): Promise<number | null> 
   const session = resumed ?? agent.createSession(args.cwd)
   // Resolved before the TUI takes over the screen, so the first frame already
   // reports the real state and no unresolved promise has to correct it later.
-  // This is a reading, not a gate: a model that is missing or unreadable is
-  // reported by the TUI and can be fixed from inside it.
+  // This reading also decides what the TUI starts in: a model that is missing
+  // or unreadable puts it into setup, and the normal working interface is not
+  // reachable until a fresh reading comes back ready.
   const readiness = await modelReadiness(agent)
   const app = new LoongCodeTui({ agent, session, label, readiness })
   app.start()
