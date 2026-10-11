@@ -37,10 +37,9 @@ export const writeTool: Tool = {
     let hasBom = false
     let existed = false
     try {
-      const file = Bun.file(filepath)
-      existed = await file.exists()
+      existed = await exists(filepath)
       if (existed) {
-        const text = await file.text()
+        const text = await fs.readFile(filepath, "utf-8")
         hasBom = text.startsWith(UTF8_BOM)
         oldContent = hasBom ? text.slice(UTF8_BOM.length) : text
       }
@@ -50,7 +49,7 @@ export const writeTool: Tool = {
 
     try {
       await fs.mkdir(path.dirname(filepath), { recursive: true })
-      await Bun.write(filepath, hasBom ? UTF8_BOM + content : content)
+      await fs.writeFile(filepath, hasBom ? UTF8_BOM + content : content)
     } catch (err) {
       return { ok: false, error: `Error writing ${filepath}: ${err instanceof Error ? err.message : err}` }
     }
@@ -63,8 +62,16 @@ export const writeTool: Tool = {
 
 async function isDirectory(filepath: string): Promise<boolean> {
   try {
-    const stat = await Bun.file(filepath).stat()
-    return Boolean((stat as { isDirectory?: () => boolean }).isDirectory?.())
+    return (await fs.stat(filepath)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function exists(filepath: string): Promise<boolean> {
+  try {
+    await fs.stat(filepath)
+    return true
   } catch {
     return false
   }

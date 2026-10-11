@@ -7,7 +7,9 @@ in an interactive terminal UI.
 
 ## Install
 
-[Bun](https://bun.sh) must be installed and available on PATH.
+[Node.js](https://nodejs.org) 22 or newer is required (npm ships with it).
+LoongCode is a single platform-independent package: the same install works on
+Windows, macOS, and Linux, on both x64 and arm64.
 
 ```sh
 npm install -g @loongcode/cli

@@ -23,19 +23,17 @@
       "bin": {
         "loongcode": "dist/loongcode.js",
       },
-      "dependencies": {
+      "devDependencies": {
         "@ai-sdk/anthropic": "4.0.58",
         "@ai-sdk/openai": "4.0.71",
+        "@loongcode/agent": "workspace:*",
+        "@loongcode/model": "workspace:*",
+        "@loongcode/tui": "workspace:*",
         "ai": "7.0.107",
         "diff": "9.0.0",
         "get-east-asian-width": "1.6.0",
         "marked": "18.0.11",
         "zod": "4.6.5",
-      },
-      "devDependencies": {
-        "@loongcode/agent": "workspace:*",
-        "@loongcode/model": "workspace:*",
-        "@loongcode/tui": "workspace:*",
       },
     },
     "packages/model": {

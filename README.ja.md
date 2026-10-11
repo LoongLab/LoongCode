@@ -50,23 +50,7 @@ LoongCode はソフトウェア開発に集中的に取り組むためのツー�
 
 ## クイックスタート
 
-インストール方法は 2 つあり、どちらも同じエージェントが動作します。
-
-### スタンドアロンバイナリ（Linux x86_64）
-
-[リリースページ](https://github.com/oliverxu1996/LoongCode/releases) から `loongcode-linux-x64` をダウンロードします:
-
-```sh
-chmod +x loongcode-linux-x64
-cd ~/my-project
-/path/to/loongcode-linux-x64
-```
-
-このバイナリは自己完結型で、Bun も Node もインストール不要です。現時点でビルド済みバイナリを提供しているのは Linux x86_64 のみです。
-
-### npm
-
-**前提条件:** [Bun](https://bun.sh) がインストール済みで PATH から利用できること。
+**前提条件:** [Node.js](https://nodejs.org) 22 以降（npm が同梱されています）。LoongCode は単一のプラットフォーム非依存パッケージなので、このインストール手順は Windows・macOS・Linux の x64 / arm64 でそのまま動作します。
 
 ```sh
 npm install -g @loongcode/cli
@@ -89,7 +73,7 @@ bun install
 bun ./packages/cli/src/main.ts /path/to/your/project
 ```
 
-初回起動時はモデルが未設定です。`/model` で設定を行います——プロトコル（`openai` または `anthropic`）、エンドポイント、プロバイダのモデル名、API キーを順に尋ねられます。コンテキスト長と最大出力トークンには適切な既定値が設定され、変更が必要な場合のみ任意の「Configure limits…」ステップで調整できます。設定はローカルに保存され、後から `/model` や Ctrl+P で切り替えられます。
+ここでは Bun が開発用ランタイムです（パッケージマネージャ、バンドラ、テストランナー）。公開パッケージに Bun は不要です。初回起動時は上記と同じセットアップフローがワークスペースを開く前に実行されます——プロトコル（`openai` または `anthropic`）、エンドポイント、プロバイダのモデル名、API キーを尋ねられ、コンテキスト長と最大出力トークンには適切な既定値が設定され、変更が必要な場合のみ任意の「Configure limits…」ステップで調整できます。設定はローカルに保存され、後から `/model` や Ctrl+P で切り替えられます。
 
 あとはタスクを入力して Enter を押せば、作業が始まります。
 

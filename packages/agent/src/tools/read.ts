@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises"
+import { open, readdir, readFile, stat } from "node:fs/promises"
 import * as path from "node:path"
 import type { Tool, ToolExecutionContext, ToolResult } from "./types"
 import { resolveToolPath } from "./types"
@@ -74,7 +74,7 @@ async function executeRead(
 
 async function statPath(filepath: string): Promise<{ size: number; isDirectory: () => boolean } | null> {
   try {
-    return await Bun.file(filepath).stat()
+    return await stat(filepath)
   } catch {
     return null
   }
@@ -123,7 +123,7 @@ async function listDirectory(filepath: string, opts: { offset: number; limit: nu
         if (entry.isDirectory()) return entry.name + "/"
         if (entry.isSymbolicLink()) {
           try {
-            const target = await Bun.file(path.join(filepath, entry.name)).stat()
+            const target = await stat(path.join(filepath, entry.name))
             if (target.isDirectory()) return entry.name + "/"
           } catch {
             // Broken symlink — show as file.
@@ -167,8 +167,7 @@ async function readFileContent(
     if (stat.size === 0) {
       sample = new Uint8Array()
     } else {
-      const sliced = Bun.file(filepath).slice(0, Math.min(SAMPLE_BYTES, stat.size))
-      sample = new Uint8Array(await sliced.arrayBuffer())
+      sample = await readSample(filepath, Math.min(SAMPLE_BYTES, stat.size))
     }
   } catch (err) {
     return { ok: false, error: { ok: false, error: `Error reading ${filepath}: ${err instanceof Error ? err.message : err}` } }
@@ -185,6 +184,20 @@ async function readFileContent(
   }
 }
 
+/** The first `length` bytes of a file, without reading the whole of it: the
+ *  binary sniff and the size probe both work on a bounded prefix, so a huge
+ *  file must not be pulled into memory to answer either question. */
+async function readSample(filepath: string, length: number): Promise<Uint8Array> {
+  const handle = await open(filepath, "r")
+  try {
+    const buffer = Buffer.allocUnsafe(length)
+    const { bytesRead } = await handle.read(buffer, 0, length, 0)
+    return new Uint8Array(buffer.subarray(0, bytesRead))
+  } finally {
+    await handle.close()
+  }
+}
+
 async function readLines(
   filepath: string,
   opts: { offset: number; limit: number },
@@ -196,7 +209,7 @@ async function readLines(
   let cut = false
   let more = false
 
-  const text = await Bun.file(filepath).text()
+  const text = await readFile(filepath, "utf-8")
   if (!text) return { raw, count: 0, cut: false, more: false, offset: opts.offset }
   const allLines = text.split("\n")
   if (text.endsWith("\n")) allLines.pop()

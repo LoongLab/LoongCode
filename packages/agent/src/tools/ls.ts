@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises"
+import { readdir, stat } from "node:fs/promises"
 import * as path from "node:path"
 import type { Tool, ToolExecutionContext, ToolResult } from "./types"
 import { resolveToolPath } from "./types"
@@ -25,8 +25,8 @@ export const lsTool: Tool = {
         if (entry.isDirectory()) return entry.name + "/"
         if (entry.isSymbolicLink()) {
           try {
-            const stat = await Bun.file(path.join(target, entry.name)).stat()
-            if (stat.isDirectory()) return entry.name + "/"
+            const followed = await stat(path.join(target, entry.name))
+            if (followed.isDirectory()) return entry.name + "/"
           } catch {
             // Broken symlink — show as file.
           }

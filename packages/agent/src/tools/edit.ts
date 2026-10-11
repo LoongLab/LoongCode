@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { createTwoFilesPatch } from "diff"
 import type { Tool, ToolExecutionContext, ToolResult } from "./types"
@@ -53,29 +54,35 @@ async function executeEdit(
     ? filePathInput
     : resolveToolPath(filePathInput, ctx?.cwd)
 
+  let entry: Awaited<ReturnType<typeof fs.stat>> | null
+  try {
+    entry = await fs.stat(filePath)
+  } catch {
+    entry = null
+  }
+
+  if (entry === null) {
+    if (oldString === "") {
+      try {
+        // Creating a file creates its parents too: the previous runtime's
+        // write did, and the write tool still does.
+        await fs.mkdir(path.dirname(filePath), { recursive: true })
+        await fs.writeFile(filePath, newString)
+        return { ok: true, data: `Created ${filePath}` }
+      } catch (err) {
+        return { ok: false, error: `Error writing ${filePath}: ${err instanceof Error ? err.message : err}` }
+      }
+    }
+    return { ok: false, error: `File not found: ${filePath}` }
+  }
+
+  if (entry.isDirectory()) {
+    return { ok: false, error: `${filePath} is a directory, not a file.` }
+  }
+
   let content: string
   try {
-    const file = Bun.file(filePath)
-    const exists = await file.exists()
-
-    if (!exists) {
-      if (oldString === "") {
-        await Bun.write(filePath, newString)
-        return { ok: true, data: `Created ${filePath}` }
-      }
-      return { ok: false, error: `File not found: ${filePath}` }
-    }
-
-    try {
-      const stat = await file.stat()
-      if ((stat as { isDirectory?: () => boolean }).isDirectory?.()) {
-        return { ok: false, error: `${filePath} is a directory, not a file.` }
-      }
-    } catch {
-      // stat may fail; proceed assuming a file.
-    }
-
-    content = await file.text()
+    content = await fs.readFile(filePath, "utf-8")
   } catch (err) {
     return { ok: false, error: `Error reading ${filePath}: ${err instanceof Error ? err.message : err}` }
   }
@@ -94,7 +101,7 @@ async function executeEdit(
 
     const newContent = match.replace(content)
     try {
-      await Bun.write(filePath, newContent)
+      await fs.writeFile(filePath, newContent)
     } catch (err) {
       return { ok: false, error: `Error writing ${filePath}: ${err instanceof Error ? err.message : err}` }
     }

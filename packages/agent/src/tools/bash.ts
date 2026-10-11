@@ -1,3 +1,6 @@
+import { stat } from "node:fs/promises"
+import * as path from "node:path"
+import { runProcess, type ProcessResult } from "./process"
 import type { Tool, ToolExecutionContext, ToolResult } from "./types"
 
 const DEFAULT_TIMEOUT = 120_000
@@ -7,7 +10,7 @@ const MAX_TIMEOUT = 600_000
  *  command result; a non-zero exit is data, not a runtime failure. */
 export const bashTool: Tool = {
   description:
-    "Execute a shell command (/bin/sh) in the repository and observe its output. " +
+    "Execute a shell command (/bin/sh on Unix, cmd.exe on Windows) in the repository and observe its output. " +
     "Use for builds, tests, git status/diff, and any repository-specific verification. " +
     "Output is truncated to the last 50KB. The exit code is appended to the output.",
   inputSchema: {
@@ -38,8 +41,8 @@ export const bashTool: Tool = {
       cwd = ctx?.cwd ?? process.cwd()
     } else {
       const resolved = resolveWorkdir(workdir, ctx?.cwd)
-      const stat = await Bun.file(resolved).stat().catch(() => null)
-      if (!stat?.isDirectory?.()) {
+      const entry = await stat(resolved).catch(() => null)
+      if (entry?.isDirectory() !== true) {
         return { ok: false, error: `workdir does not exist or is not a directory: ${resolved}` }
       }
       cwd = resolved
@@ -54,34 +57,19 @@ export const bashTool: Tool = {
       ? timeoutController.signal
       : AbortSignal.any([timeoutController.signal, ctx.signal])
 
-    let result: { stdout: string; stderr: string; exitCode: number }
+    // The platform's own shell: /bin/sh everywhere the POSIX contract holds,
+    // cmd.exe on Windows where it does not exist.
+    const shell = process.platform === "win32" ? process.env.ComSpec ?? "cmd.exe" : "/bin/sh"
+    const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command]
+
+    let result: ProcessResult
     try {
-      const proc = Bun.spawn(["/bin/sh", "-c", command], {
-        stdout: "pipe",
-        stderr: "pipe",
+      result = await runProcess(shell, shellArgs, {
         cwd,
-        signal,
         env: { ...process.env },
+        signal,
+        onOutput: ctx?.onOutput,
       })
-      const readStreaming = async (stream: ReadableStream<Uint8Array>): Promise<string> => {
-        const reader = stream.getReader()
-        const decoder = new TextDecoder()
-        let text = ""
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          const chunk = decoder.decode(value, { stream: true })
-          text += chunk
-          ctx?.onOutput?.(chunk)
-        }
-        return text
-      }
-      const [stdout, stderr] = await Promise.all([
-        readStreaming(proc.stdout),
-        readStreaming(proc.stderr),
-      ])
-      const exitCode = await proc.exited
-      result = { stdout, stderr, exitCode }
     } catch (err) {
       clearTimeout(timeoutHandle)
       if (timeoutController.signal.aborted) {
@@ -117,8 +105,13 @@ export const bashTool: Tool = {
 
 function resolveWorkdir(workdir: string, cwd?: string): string {
   const base = cwd ?? process.cwd()
-  const resolved = workdir.startsWith("/") ? workdir : `${base}/${workdir}`
-  return resolved.replace(/\/+$/, "") || "/"
+  // path.resolve instead of string concatenation: a relative workdir and a
+  // Windows drive-letter workdir both have to survive, and a trailing
+  // separator must be trimmed without eating the root itself (`/` or `C:\`).
+  const resolved = path.isAbsolute(workdir) ? path.normalize(workdir) : path.resolve(base, workdir)
+  const root = path.parse(resolved).root
+  const trimmed = resolved.replace(/[\\/]+$/, "")
+  return trimmed.length < root.length ? root : trimmed
 }
 
 /**
