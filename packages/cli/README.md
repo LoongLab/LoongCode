@@ -12,7 +12,7 @@ LoongCode is a single platform-independent package: the same install works on
 Windows, macOS, and Linux, on both x64 and arm64.
 
 ```sh
-npm install -g @loongcode/cli
+npm install -g @loonglab/loongcode-cli
 cd my-project
 loongcode
 ```

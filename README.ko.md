@@ -53,7 +53,7 @@ LoongCode는 소프트웨어 개발에 집중합니다. 범용 AI 어시스턴�
 **전제 조건:** [Node.js](https://nodejs.org) 22 이상(npm이 함께 제공됩니다). LoongCode는 플랫폼 독립적인 단일 패키지이므로, 이 설치 방법은 Windows, macOS, Linux의 x64/arm64에서 모두 동작합니다.
 
 ```sh
-npm install -g @loongcode/cli
+npm install -g @loonglab/loongcode-cli
 cd ~/my-project
 loongcode
 ```

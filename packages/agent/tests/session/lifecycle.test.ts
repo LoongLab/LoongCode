@@ -8,7 +8,7 @@
  * memory".
  *
  * The command-driven lifecycle tests (/fork, /clone, /import) live with the
- * application in `@loongcode/cli`; this file covers the runtime mechanisms:
+ * application in `@loonglab/loongcode-cli`; this file covers the runtime mechanisms:
  * compaction durability and run recovery ordering.
  */
 import { describe, expect, test } from "bun:test"

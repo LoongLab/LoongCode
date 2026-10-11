@@ -53,7 +53,7 @@ LoongCode 刻意专注于软件开发，它并不打算成为一个通用的 AI 
 **前提条件：** [Node.js](https://nodejs.org) 22 或更高版本（随附 npm）。LoongCode 是单一的平台无关包，这一条安装命令在 Windows、macOS、Linux 的 x64 与 arm64 上都可用。
 
 ```sh
-npm install -g @loongcode/cli
+npm install -g @loonglab/loongcode-cli
 cd ~/my-project
 loongcode
 ```

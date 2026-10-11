@@ -18,7 +18,7 @@
       },
     },
     "packages/cli": {
-      "name": "@loongcode/cli",
+      "name": "@loonglab/loongcode-cli",
       "version": "0.1.0",
       "bin": {
         "loongcode": "dist/loongcode.js",
@@ -68,11 +68,11 @@
 
     "@loongcode/agent": ["@loongcode/agent@workspace:packages/agent"],
 
-    "@loongcode/cli": ["@loongcode/cli@workspace:packages/cli"],
-
     "@loongcode/model": ["@loongcode/model@workspace:packages/model"],
 
     "@loongcode/tui": ["@loongcode/tui@workspace:packages/tui"],
+
+    "@loonglab/loongcode-cli": ["@loonglab/loongcode-cli@workspace:packages/cli"],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 

@@ -53,7 +53,7 @@ LoongCode はソフトウェア開発に集中的に取り組むためのツー�
 **前提条件:** [Node.js](https://nodejs.org) 22 以降（npm が同梱されています）。LoongCode は単一のプラットフォーム非依存パッケージなので、このインストール手順は Windows・macOS・Linux の x64 / arm64 でそのまま動作します。
 
 ```sh
-npm install -g @loongcode/cli
+npm install -g @loonglab/loongcode-cli
 cd ~/my-project
 loongcode
 ```

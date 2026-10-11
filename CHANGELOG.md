@@ -23,8 +23,8 @@ All notable changes to LoongCode will be documented in this file.
 
 - **The product is now LoongCode.** The rename is complete across the CLI,
   its runtime, its configuration and its documentation. Command, package,
-  binary and configuration names are all `loongcode`: the CLI is
-  `@loongcode/cli`, the executable is `loongcode`, and the user-scope
+  binary and configuration names are all `loongcode`: the CLI is published as
+  `@loonglab/loongcode-cli`, the executable is `loongcode`, and the user-scope
   configuration directory is `~/.loongcode/` (project-scope configuration is
   `.loongcode/`). The `MINICODE_CONFIG_DIR` override is replaced by
   `LOONGCODE_CONFIG_DIR`. The wordmark, help text, and agent identity all read

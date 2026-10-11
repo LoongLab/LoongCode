@@ -1,5 +1,5 @@
 {
-  "name": "@loongcode/cli",
+  "name": "@loonglab/loongcode-cli",
   "version": "0.1.0",
   "description": "LoongCode — a terminal coding agent that works directly in your repository",
   "license": "Apache-2.0",
