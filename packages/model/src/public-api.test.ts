@@ -9,6 +9,7 @@ describe("public API boundary", () => {
     expect(Object.keys(publicApi).sort()).toEqual([
       "ModelError",
       "ModelManager",
+      "testModelConnection",
     ])
   })
 

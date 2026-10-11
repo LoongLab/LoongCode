@@ -12,7 +12,8 @@ import {
 } from "@loongcode/tui"
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
-import type { Model, ModelLimits, ModelMessage } from "@loongcode/model"
+import { ModelError, testModelConnection } from "@loongcode/model"
+import type { Model, ModelConfig, ModelLimits, ModelMessage, ModelProtocol } from "@loongcode/model"
 import type { Checkpoint, LoongCode, RewindNote, RunEvent, Session, SessionMessage } from "@loongcode/agent"
 import { CheckpointStore } from "@loongcode/agent"
 import { discardTurns, liveCheckpoints, recordRewind, rewindSession, summarizeRange, turnIndexOf, type CheckpointAdvance } from "@loongcode/agent"
@@ -27,6 +28,7 @@ import {
 	type RunDisplay,
 } from "../projection"
 import { FooterLineView } from "./view/footer"
+import { SetupPanel } from "./view/setup-panel"
 import { KEYBOARD_HINTS, helloHeader } from "./view/banner"
 import { buildTuiLayout, fixedChromeRows } from "./view/layout"
 import { runCompaction } from "./compaction"
@@ -239,6 +241,183 @@ const SETUP_AGAIN = "\u0000setup:again"
 const SETUP_EXIT = "\u0000setup:exit"
 
 /**
+ * The two protocols a connection can be configured for. The labels name the
+ * wire protocol, not a vendor: any service that speaks one of them is
+ * configured by choosing it.
+ */
+const SETUP_PROTOCOLS: readonly { value: ModelProtocol; label: string }[] = [
+	{ value: "openai", label: "OpenAI-compatible" },
+	{ value: "anthropic", label: "Anthropic-compatible" },
+]
+
+/** The official base URL of each protocol — the default the address step offers. */
+const SETUP_ENDPOINTS: Record<ModelProtocol, string> = {
+	openai: "https://api.openai.com/v1",
+	anthropic: "https://api.anthropic.com/v1",
+}
+
+/**
+ * LoongCode-managed limit defaults. The limits are not part of the approved
+ * setup sequence — the runtime needs *a* valid pair, and these are the values
+ * the previous configuration flow used, so an existing installation's models
+ * and a new one's are shaped identically.
+ */
+const SETUP_CONTEXT_WINDOW = 128000
+const SETUP_MAX_OUTPUT_TOKENS = 8192
+
+/**
+ * How long the connection test may take before it is reported as timed out.
+ *
+ * Exported so the test that proves the timeout can fire the real one rather
+ * than a second, different number.
+ */
+export const SETUP_TEST_TIMEOUT_MS = 30_000
+
+/** A protocol's user-facing label, for the screens that report the choice. */
+function protocolLabel(protocol: ModelProtocol): string {
+	return SETUP_PROTOCOLS.find(choice => choice.value === protocol)?.label ?? protocol
+}
+
+/**
+ * The local configuration id for a provider model identifier, so the user is
+ * never asked for a second, internal name. Control characters are stripped —
+ * the selector reserves a control-character prefix for its own action values —
+ * and a name that reduces to nothing falls back to `"model"`.
+ */
+function deriveModelId(model: string): string {
+	const cleaned = model.trim().replace(/[\u0000-\u001f\u007f]/g, "").trim()
+	return cleaned.length > 0 ? cleaned : "model"
+}
+
+/** Why a connection test did not succeed, in the user's terms. */
+interface TestFailure {
+	readonly reason: string
+	readonly details: string
+}
+
+/** The values the setup sequence collects. One record, edited in place. */
+interface SetupDraft {
+	protocol: ModelProtocol
+	endpoint: string
+	apiKey: string
+	model: string
+}
+
+/** Where the sequence is. Back moves to the previous step; the values stay. */
+type SetupStep =
+	| "protocol"
+	| "endpoint"
+	| "apiKey"
+	| "model"
+	| "test"
+	| "tested"
+	| "failed"
+	| "saved"
+	| "exit"
+
+type SetupFieldName = "endpoint" | "apiKey" | "model"
+
+interface SetupFieldSpec {
+	readonly step: string
+	readonly heading: string
+	readonly note?: string
+	readonly hints: string
+	readonly secret: boolean
+	/** Where Escape goes from this field. */
+	readonly back: SetupStep
+	/** Where a valid value goes. */
+	readonly next: SetupStep
+	/** The problem with a value, or null when it is fine. */
+	readonly validate: (value: string) => string | null
+}
+
+/** The three text fields of the sequence, in the approved order. */
+const SETUP_FIELDS: Record<SetupFieldName, SetupFieldSpec> = {
+	endpoint: {
+		step: "Step 2/5",
+		heading: "Service address (Base URL)",
+		hints: "Enter Next · Esc Back",
+		secret: false,
+		back: "protocol",
+		next: "apiKey",
+		validate: value => {
+			if (value.length === 0) return "Enter the service address."
+			let url: URL
+			try {
+				url = new URL(value)
+			} catch {
+				return "That is not a valid URL."
+			}
+			if (url.protocol !== "http:" && url.protocol !== "https:") {
+				return "The address must start with http:// or https://."
+			}
+			return null
+		},
+	},
+	apiKey: {
+		step: "Step 3/5",
+		heading: "API Key",
+		note: "The API key is masked.",
+		hints: "Enter Next · Esc Back",
+		secret: true,
+		back: "endpoint",
+		next: "model",
+		validate: value => (value.length === 0 ? "Enter the API key." : null),
+	},
+	model: {
+		step: "Step 4/5",
+		heading: "Model ID",
+		note: "Enter the model identifier supported by the selected model service.",
+		hints: "Enter Test Model · Esc Back",
+		secret: false,
+		back: "apiKey",
+		next: "test",
+		validate: value => (value.length === 0 ? "Enter the model identifier." : null),
+	},
+}
+
+/**
+ * Turns a failed probe into a reason and a safe detail line.
+ *
+ * The detail comes from the model package, which scrubs the API key out of
+ * every message it raises; nothing here re-derives it from the request, so
+ * there is no second path for a credential to reach the screen.
+ */
+function describeTestFailure(error: unknown, cancelled: boolean, timedOut: boolean): TestFailure {
+	if (cancelled) {
+		return { reason: "The test was cancelled.", details: "No model response was received." }
+	}
+	if (timedOut) {
+		return {
+			reason: "The request timed out.",
+			details: `No response within ${Math.round(SETUP_TEST_TIMEOUT_MS / 1000)} seconds.`,
+		}
+	}
+	if (error instanceof ModelError) {
+		switch (error.code) {
+			case "authentication_failed":
+				return { reason: "Authentication failed.", details: "The service rejected the API key." }
+			case "rate_limited":
+				return { reason: "The service is rate limiting requests.", details: error.message }
+			case "invalid_response":
+				return { reason: "The service returned a response that could not be used.", details: error.message }
+			case "context_exceeded":
+				return { reason: "The request exceeded the model's context window.", details: error.message }
+			case "cancelled":
+				return { reason: "The request was cancelled.", details: "No model response was received." }
+			case "configuration_error":
+				return { reason: "The configuration is not valid.", details: error.message }
+			default:
+				// The provider's own message is what tells a wrong model id from
+				// an unreachable host; the adapter classifies both as a failed
+				// request, so the detail carries the difference.
+				return { reason: "The model request failed.", details: error.message }
+		}
+	}
+	return { reason: "The model request failed.", details: "The service could not be reached." }
+}
+
+/**
  * Whether a model is ready to run.
  *
  * Three outcomes, never two. "Nothing is configured" and "the configuration
@@ -353,6 +532,18 @@ export class LoongCodeTui {
 	private pendingTask: string | null = null
 	/** Set once the user has chosen to leave setup; stops the setup loop. */
 	private exiting = false
+	/**
+	 * The setup screen itself. It is the entire visible interface while the
+	 * gate is closed — the step's text, the input it needs, and the keys that
+	 * work — and it is never rendered outside setup.
+	 */
+	private readonly setupPanel = new SetupPanel()
+	/** The list the current setup step is offering, when it offers one. */
+	private setupSelector: Selector | null = null
+	/** Aborts an in-flight connection test. Present only while one is running. */
+	private testAbort: AbortController | null = null
+	/** Why the last connection test failed, for the failure screen. */
+	private lastTestFailure: TestFailure | null = null
 	private running = false
 	/**
 	 * True for exactly the lifetime of a manual `/compact`. Application-owned:
@@ -409,7 +600,11 @@ export class LoongCodeTui {
 			label: options.label ?? this.session.cwd,
 			hints: KEYBOARD_HINTS,
 			availableHeight: () => this.transcriptViewportHeight(),
-			visible: () => this.session.messages.length === 0 && !this.running,
+			// The hero is the empty *workspace* state, so it is decided here,
+			// where the frame is composed — not rendered and then hidden. While
+			// the gate is closed there is no workspace to be empty, and the
+			// setup screen is what the user is looking at.
+			visible: () => this.phase === "normal" && this.session.messages.length === 0 && !this.running,
 		})
 
 		this.editor = this.createEditor()
@@ -447,13 +642,9 @@ export class LoongCodeTui {
 		if (this.phase === "setup") {
 			// The gate is closed, so the workspace view is never built: no
 			// resumed history is replayed, no session warning is rendered, and
-			// the composer is replaced by the setup state. What appears here is
-			// setup messaging and the configuration error, and nothing else.
-			if (options.readiness?.kind === "missing") {
-				this.chat.addChild(notice(NO_MODEL_NOTICE))
-			} else if (options.readiness?.kind === "error") {
-				this.chat.addChild(errorNotice(options.readiness.message))
-			}
+			// no startup banner is composed (its visibility predicate excludes
+			// this phase). The setup screen is the whole of what is shown.
+			this.chat.addChild(this.setupPanel)
 		} else {
 			this.replaySession()
 			this.updateWarning()
@@ -535,6 +726,10 @@ export class LoongCodeTui {
 			},
 			ask: async (label, options) => {
 				const secret = options?.secret === true
+				// A caller already showing the prompt elsewhere — the setup
+				// panel, above the field it is asking for — does not need it
+				// repeated in the status row at the other end of the screen.
+				const quiet = options?.quiet === true
 				return new Promise<string | null>(resolve => {
 					this.askState = { label, resolve: value => {
 						this.status.clear()
@@ -561,7 +756,7 @@ export class LoongCodeTui {
 					// A prompt is typed into the editor, so the editor is in the
 					// layout for exactly as long as the prompt is open.
 					this.updateEditorSlot()
-					this.status.addChild(new Text(ansi.bold(label), 1, 0))
+					if (!quiet) this.status.addChild(new Text(ansi.bold(label), 1, 0))
 					this.tui.setFocus(this.editor)
 					this.tui.requestRender()
 				})
@@ -610,6 +805,21 @@ export class LoongCodeTui {
 					this.tui.requestRender()
 				}
 				return outcome
+			},
+			configureModel: async (): Promise<boolean> => {
+				// One configuration flow, wherever it is entered from: the
+				// workspace command shows the same sequence the mandatory gate
+				// does, so no path can save a model that was never called.
+				if (this.phase === "setup") {
+					return (await this.runSetupSequence()) === "saved"
+				}
+				this.enterSetupPhase(null)
+				const outcome = await this.runSetupSequence()
+				// Back to the workspace through the same fresh check that governs
+				// entry, so a save that did not take cannot re-open it on a
+				// reading taken before the attempt.
+				void this.runSetup()
+				return outcome === "saved"
 			},
 			submitTask: async text => {
 				await this.submit(text)
@@ -682,6 +892,13 @@ export class LoongCodeTui {
 		if (newline !== undefined) return newline
 
 		if (matchesKey(data, "escape")) {
+			if (this.testAbort !== null) {
+				// Cancelling a test is an explicit act with an explicit result:
+				// it stops the request and is reported as a cancellation, never
+				// as a success.
+				this.testAbort.abort()
+				return { consume: true }
+			}
 			if (this.askState !== null) {
 				const ask = this.askState
 				this.askState = null
@@ -881,6 +1098,7 @@ export class LoongCodeTui {
 			// again and the task is held, not run: it goes back to the composer
 			// only once setup succeeds, and only the user submits it.
 			this.enterSetupPhase(text)
+			void this.runSetup()
 			return
 		}
 
@@ -930,6 +1148,10 @@ export class LoongCodeTui {
 					// opened. That is a failure like any other: the user decides,
 					// and the loop never spins on it.
 					this.setupReason = "view"
+					this.setupPanel.setContent({
+						heading: ["Workspace unavailable", "Your model is active, but the workspace could not be opened."],
+						hints: "↑/↓ Select · Enter Confirm",
+					})
 					this.updateEditorSlot()
 					if (!(await this.offerRecovery("Retry"))) return
 					firstAttempt = false
@@ -940,9 +1162,16 @@ export class LoongCodeTui {
 				this.updateEditorSlot()
 				if (readiness.kind === "error" && readiness.message !== shownError) {
 					shownError = readiness.message
+					this.setupPanel.setContent({
+						heading: ["Model configuration", "LoongCode cannot read your model configuration."],
+						problem: readiness.message,
+						hints: "↑/↓ Select · Enter Confirm",
+					})
 					// Not an unconfigured installation: the configuration exists
 					// and cannot be read. Naming the file is the whole remedy —
-					// it is preserved, never repaired or replaced.
+					// it is preserved, never repaired or replaced — so the full
+					// message is kept in the transcript beneath the frame, where
+					// a long path is not truncated.
 					this.chat.addChild(errorNotice(readiness.message))
 					this.tui.requestRender()
 				}
@@ -959,7 +1188,16 @@ export class LoongCodeTui {
 				}
 				firstAttempt = false
 
-				if (readiness.kind === "missing") await this.runModelCommand()
+				if (readiness.kind === "missing") {
+					// The sequence owns the screen until it saves or the user
+					// leaves. A save does not open the gate by itself: the loop
+					// re-reads, so entry is still decided by a fresh check.
+					const outcome = await this.runSetupSequence()
+					if (outcome === "exited") {
+						this.exitFromSetup()
+						return
+					}
+				}
 			}
 		} catch (error) {
 			// Nothing in the loop is expected to throw — the reading is total and
@@ -988,17 +1226,305 @@ export class LoongCodeTui {
 		return false
 	}
 
-	/** Runs the existing `/model` command — the only model surface there is. */
-	private async runModelCommand(): Promise<void> {
-		const command = findCommand("model")
-		try {
-			await command?.execute(this.commandContext, "")
-		} catch (error) {
-			// The same contract as any other command: a failure is a notice.
-			this.chat.addChild(errorNotice(
-				`/model failed: ${error instanceof Error ? error.message : String(error)}`,
-			))
+	/**
+	 * The approved setup sequence: protocol, service address, API key, model
+	 * identifier, a real model call, then an explicit save.
+	 *
+	 * The collected values live in one record that every step reads and writes,
+	 * so Back and a retry return the user to what they had typed. Nothing is
+	 * persisted until a call has actually succeeded AND the user has confirmed
+	 * it — and the save action exists only on the success screen, so there is no
+	 * route from a failed, cancelled or timed-out test to saving.
+	 */
+	private async runSetupSequence(): Promise<"saved" | "exited"> {
+		const first = SETUP_PROTOCOLS[0]!.value
+		const draft: SetupDraft = {
+			protocol: first,
+			endpoint: SETUP_ENDPOINTS[first],
+			apiKey: "",
+			model: "",
 		}
+		let step: SetupStep = "protocol"
+
+		for (;;) {
+			switch (step) {
+				case "protocol":
+					step = await this.setupProtocolStep(draft)
+					break
+				case "endpoint":
+					step = await this.setupFieldStep("endpoint", draft)
+					break
+				case "apiKey":
+					step = await this.setupFieldStep("apiKey", draft)
+					break
+				case "model":
+					step = await this.setupFieldStep("model", draft)
+					break
+				case "test":
+					step = await this.setupTestStep(draft)
+					break
+				case "tested":
+					step = await this.setupTestedStep(draft)
+					break
+				case "failed":
+					step = await this.setupFailedStep()
+					break
+				case "saved":
+					return "saved"
+				case "exit":
+					return "exited"
+			}
+		}
+	}
+
+	/** Step 1 — the protocol. Esc here is the exit question, not a Back. */
+	private async setupProtocolStep(draft: SetupDraft): Promise<SetupStep> {
+		this.setupPanel.setContent({
+			heading: ["Configure your model", "Select API protocol"],
+			hints: "↑/↓ Select · Enter Next · Esc Exit",
+		})
+		const chosen = await this.setupPick("Protocol", SETUP_PROTOCOLS, draft.protocol)
+		if (chosen !== null && (chosen === "openai" || chosen === "anthropic")) {
+			draft.protocol = chosen
+			// The address default belongs to the protocol just chosen.
+			draft.endpoint = SETUP_ENDPOINTS[chosen]
+			return "endpoint"
+		}
+		const leave = await this.setupPick("Leave setup?", [
+			{ value: "stay", label: "Continue setup" },
+			{ value: "exit", label: "Exit LoongCode", description: "LoongCode cannot run tasks without a model" },
+		])
+		return leave === "exit" ? "exit" : "protocol"
+	}
+
+	/**
+	 * Steps 2–4 — the address, the key and the model identifier.
+	 *
+	 * Each is a single field with its own validation: a rejected value is
+	 * reported on the step it belongs to and the input is kept, so correcting a
+	 * typo never means retyping the rest.
+	 */
+	private async setupFieldStep(field: SetupFieldName, draft: SetupDraft): Promise<SetupStep> {
+		const spec = SETUP_FIELDS[field]
+		let problem: string | null = null
+		for (;;) {
+			this.setupPanel.setContent({
+				step: spec.step,
+				heading: [spec.heading],
+				...(spec.note === undefined ? {} : { note: spec.note }),
+				...(problem === null ? {} : { problem }),
+				hints: spec.hints,
+			})
+			const value = await this.commandContext.ask(spec.heading, {
+				// The panel above carries the prompt; a second copy in the status
+				// row would point at the wrong end of the screen.
+				quiet: true,
+				secret: spec.secret,
+				initialValue: draft[field],
+			})
+			if (value === null) return spec.back
+			const trimmed = value.trim()
+			problem = spec.validate(trimmed)
+			if (problem !== null) continue
+			draft[field] = trimmed
+			return spec.next
+		}
+	}
+
+	/**
+	 * Step 5 — a real request through the selected protocol.
+	 *
+	 * Nothing is persisted here, and nothing downstream can reach the save
+	 * action: the outcome of this call is what decides which screen follows.
+	 */
+	private async setupTestStep(draft: SetupDraft): Promise<SetupStep> {
+		this.setupPanel.setContent({
+			step: "Step 5/5",
+			heading: [
+				"Testing model…",
+				"",
+				"● Sending test request",
+				"● Waiting for model response",
+			],
+			hints: "Testing in progress. Please wait. · Esc Cancel test",
+		})
+		this.setupSelector = null
+		this.updateEditorSlot()
+		this.tui.requestRender()
+
+		const cancel = new AbortController()
+		const timeout = new AbortController()
+		const timer = setTimeout(() => timeout.abort(), SETUP_TEST_TIMEOUT_MS)
+		this.testAbort = cancel
+		try {
+			await testModelConnection(this.setupConfig(draft), {
+				signal: AbortSignal.any([timeout.signal, cancel.signal]),
+			})
+			this.lastTestFailure = null
+			return "tested"
+		} catch (error) {
+			this.lastTestFailure = describeTestFailure(error, cancel.signal.aborted, timeout.signal.aborted)
+			return "failed"
+		} finally {
+			clearTimeout(timer)
+			this.testAbort = null
+		}
+	}
+
+	/** The success screen. Saving is an explicit choice made here and nowhere else. */
+	private async setupTestedStep(draft: SetupDraft): Promise<SetupStep> {
+		this.setupPanel.setContent({
+			heading: [
+				"✓ Model test succeeded",
+				"",
+				`Protocol: ${protocolLabel(draft.protocol)}`,
+				`Model:    ${draft.model}`,
+				"",
+				"A valid model response was received.",
+			],
+			hints: "↑/↓ Select · Enter Confirm",
+		})
+		const choice = await this.setupPick("Model test succeeded", [
+			{ value: "save", label: "Save and Enter Workspace" },
+			{ value: "edit", label: "Return to Edit Configuration" },
+		])
+		if (choice !== "save") return "model"
+
+		const unsaved = await this.saveSetupConfig(draft)
+		if (unsaved === null) return "saved"
+		if (unsaved === "cancelled") return "model"
+
+		// A configuration that could not be written is not a success: the user
+		// stays in setup, told why, with the values still in hand.
+		this.setupPanel.setContent({
+			heading: [
+				"✗ Could not save the configuration",
+				"",
+				`Details: ${unsaved}`,
+				"",
+				"Configuration is retained and can be corrected.",
+			],
+			hints: "↑/↓ Select · Enter Confirm",
+		})
+		const next = await this.setupPick("Save failed", [
+			{ value: "edit", label: "Return to Edit Configuration" },
+			{ value: "exit", label: "Exit LoongCode" },
+		])
+		return next === "exit" ? "exit" : "model"
+	}
+
+	/** The failure screen: the configuration is kept, and editing or retrying is offered. */
+	private async setupFailedStep(): Promise<SetupStep> {
+		const failure = this.lastTestFailure ?? {
+			reason: "The model request failed.",
+			details: "No model response was received.",
+		}
+		this.setupPanel.setContent({
+			heading: [
+				"✗ Model test failed",
+				"",
+				`Reason: ${failure.reason}`,
+				`Details: ${failure.details}`,
+				"",
+				"Configuration is retained and can be corrected.",
+			],
+			hints: "↑/↓ Select · Enter Confirm",
+		})
+		const choice = await this.setupPick("Model test failed", [
+			{ value: "edit", label: "Return to Edit Configuration" },
+			{ value: "retry", label: "Retry Test" },
+			{ value: "exit", label: "Exit LoongCode" },
+		])
+		if (choice === "retry") return "test"
+		return choice === "exit" ? "exit" : "model"
+	}
+
+	/** The candidate configuration, in the shape the manager persists. */
+	private setupConfig(draft: SetupDraft): ModelConfig {
+		return {
+			id: deriveModelId(draft.model),
+			name: draft.model,
+			protocol: draft.protocol,
+			endpoint: draft.endpoint,
+			model: draft.model,
+			apiKey: draft.apiKey,
+			contextWindow: SETUP_CONTEXT_WINDOW,
+			maxOutputTokens: SETUP_MAX_OUTPUT_TOKENS,
+		}
+	}
+
+	/**
+	 * Persists and activates the verified configuration.
+	 *
+	 * Returns null on success, `"cancelled"` when the user backed out of the
+	 * id conflict prompt, and the failure message otherwise.
+	 */
+	private async saveSetupConfig(draft: SetupDraft): Promise<string | null> {
+		const config = this.setupConfig(draft)
+		let id = config.id
+		try {
+			const manager = await this.commandContext.agent().modelManager()
+			const existing = new Set(manager.list().map(model => model.id))
+			if (existing.has(id)) {
+				// The local id is derived from the model identifier, so two
+				// configurations for the same model name need a name of their
+				// own. The user supplies it; no silent suffix is invented.
+				const resolved = await this.askForSetupId(id, existing)
+				if (resolved === null) return "cancelled"
+				id = resolved
+			}
+			await this.commandContext.agent().configureModel({ ...config, id, name: id })
+			return null
+		} catch (error) {
+			return error instanceof Error ? error.message : String(error)
+		}
+	}
+
+	/** Asks for a local id that is not taken yet. */
+	private async askForSetupId(taken: string, existing: ReadonlySet<string>): Promise<string | null> {
+		let candidate = taken
+		for (;;) {
+			const raw = await this.commandContext.ask(
+				`model "${candidate}" already exists — enter a different local model id:`,
+			)
+			if (raw === null) return null
+			const next = raw.trim()
+			if (next.length === 0 || next.startsWith("\u0000") || existing.has(next)) continue
+			return next
+		}
+	}
+
+	/**
+	 * Shows a list inside the setup panel and resolves with the choice, or null
+	 * when the user pressed Escape.
+	 */
+	private setupPick(
+		title: string,
+		items: readonly SelectorItem[],
+		selectedValue?: string,
+	): Promise<string | null> {
+		const selector = new Selector(title, [...items], selectedValue)
+		return new Promise<string | null>(resolve => {
+			const close = (): void => {
+				if (this.setupSelector !== selector) return
+				this.setupSelector = null
+				this.updateEditorSlot()
+				this.tui.setFocus(this.editor)
+				this.tui.requestRender()
+			}
+			selector.onSelect = value => {
+				close()
+				resolve(value)
+			}
+			selector.onCancel = () => {
+				close()
+				resolve(null)
+			}
+			this.setupSelector = selector
+			this.updateEditorSlot()
+			this.tui.setFocus(selector)
+			this.tui.requestRender()
+		})
 	}
 
 	/**
@@ -1035,6 +1561,7 @@ export class LoongCodeTui {
 		// composer — for the user to submit, never to be run here.
 		this.restorePrompt(this.pendingTask ?? "")
 		this.pendingTask = null
+		this.setupPanel.setPendingTask(null)
 		this.updateEditorSlot()
 		this.tui.setFocus(this.editor)
 		this.updateFooter()
@@ -1057,11 +1584,11 @@ export class LoongCodeTui {
 		this.phase = "setup"
 		this.chat.clear()
 		this.warning.clear()
-		this.chat.addChild(notice(NO_MODEL_NOTICE))
+		this.setupPanel.setPendingTask(this.pendingTask)
+		this.chat.addChild(this.setupPanel)
 		this.updateEditorSlot()
 		this.updateFooter()
 		this.tui.requestRender()
-		void this.runSetup()
 	}
 
 	/**
@@ -1085,31 +1612,21 @@ export class LoongCodeTui {
 	 */
 	private updateEditorSlot(): void {
 		this.editorSlot.clear()
-		if (this.phase === "normal" || this.askState !== null) {
-			// A prompt is typed into this editor and submitted with Enter, so
-			// submit is enabled for exactly the states that show it.
-			this.editor.disableSubmit = false
-			this.editorSlot.addChild(this.editor)
+		if (this.phase === "setup") {
+			// Setup owns the screen: the list or the field is part of the setup
+			// panel, and the composer slot stays empty — there is no workspace
+			// composer to type a task into yet.
+			const field = this.askState !== null ? this.editor : this.setupSelector
+			this.setupPanel.setInput(field)
+			// Enter reaches the editor only while it is the setup field.
+			this.editor.disableSubmit = field !== this.editor
 			return
 		}
-		// The composer is not on screen: its Enter does nothing even if some
-		// path focuses it. The submission guard is the real enforcement; this
-		// only keeps the component honest.
-		this.editor.disableSubmit = true
-		const state = this.setupReason === "error"
-			? "Correct the model configuration to continue."
-			: this.setupReason === "view"
-				? "Your model is ready, but the workspace could not be opened."
-				: "Set up a model to continue."
-		this.editorSlot.addChild(new Text(`  ${ansi.gray(state)}`, 1, 0))
-		if (this.pendingTask !== null) {
-			// The task is held, not lost: say so where the composer would be.
-			this.editorSlot.addChild(new Text(
-				`  ${ansi.gray(`Your task is saved: ${truncateForRow(this.pendingTask)}`)}`,
-				1,
-				0,
-			))
-		}
+		this.setupPanel.setInput(null)
+		// A prompt is typed into this editor and submitted with Enter, so
+		// submit is enabled for exactly the states that show it.
+		this.editor.disableSubmit = false
+		this.editorSlot.addChild(this.editor)
 	}
 
 	private async startRun(text: string): Promise<void> {

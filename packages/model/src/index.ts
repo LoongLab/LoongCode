@@ -10,6 +10,7 @@
 
 export { ModelManager } from "./manager"
 export { ModelError } from "./errors"
+export { testModelConnection } from "./probe"
 export type { ModelErrorCode } from "./errors"
 export type {
   Model,
