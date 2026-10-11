@@ -250,10 +250,24 @@ describe("the model's window is shown separately from the input budget", () => {
     expect(row2Text({ limits, lastCallUsage: { inputTokens: 60_000 } })).toContain("60k/750k")
   })
 
-  test("no model configured omits the model groups and the context field", () => {
+  test("an unresolved model omits the model groups and the context field", () => {
+    // Nothing is known yet — which is not the same as knowing there is none.
     const text = row1Text({ modelId: undefined, limits: undefined })
     expect(text).toBe("~/project (main) · Idle")
     expect(row2Text({ modelId: undefined, limits: undefined })).toBe("no run yet")
+  })
+
+  test("no model configured says so where a configured user reads their model", () => {
+    const text = row1Text({ modelId: undefined, limits: undefined, modelMissing: true })
+    expect(text).toBe("~/project (main) · Idle · no model")
+  })
+
+  test("a resolved model is never hidden by the missing flag", () => {
+    // Both come from the same reading, so they cannot disagree in practice —
+    // and if a stale flag ever survived one, the fact wins.
+    const text = row1Text({ modelMissing: true })
+    expect(text).toContain("deepseek-chat")
+    expect(text).not.toContain("no model")
   })
 
   test("a long model id is bounded", () => {

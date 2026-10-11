@@ -1,6 +1,6 @@
 import { LoongCode } from "@loongcode/agent"
 import { LOONGCODE_VERSION } from "./version"
-import { LoongCodeTui } from "./interactive/app"
+import { LoongCodeTui, modelReadiness } from "./interactive/app"
 import { runPrint } from "./print"
 
 /**
@@ -156,7 +156,12 @@ export async function runCli(argv: string[], io: CliIO): Promise<number | null> 
   const agent = new LoongCode()
   const { session: resumed, label } = await resolveSession(agent, args)
   const session = resumed ?? agent.createSession(args.cwd)
-  const app = new LoongCodeTui({ agent, session, label })
+  // Resolved before the TUI takes over the screen, so the first frame already
+  // reports the real state and no unresolved promise has to correct it later.
+  // This is a reading, not a gate: a model that is missing or unreadable is
+  // reported by the TUI and can be fixed from inside it.
+  const readiness = await modelReadiness(agent)
+  const app = new LoongCodeTui({ agent, session, label, readiness })
   app.start()
   return null
 }

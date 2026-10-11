@@ -107,6 +107,30 @@ describe("CLI interactive guard", () => {
     }
   })
 
+  test("the no-model failure is actionable, and holds nothing internal", async () => {
+    const dir = tempDir()
+    const previous = process.env.LOONGCODE_CONFIG_DIR
+    process.env.LOONGCODE_CONFIG_DIR = dir
+    try {
+      const c = capture(false)
+      const outcome = await runCli(["-p", "hello", dir], c.io).catch((err: unknown) => err as Error)
+      const message = String(outcome)
+      // The non-interactive path has no TUI to offer setup, so its one line has
+      // to carry the whole explanation — and nothing that only makes sense
+      // inside the codebase.
+      expect(message).toMatch(/No active model configured/)
+      expect(message).toContain("/model")
+      expect(message).toContain(join(dir, "models.json"))
+      expect(message).not.toContain('"version"')
+      expect(message).not.toContain("restart")
+      expect(message).not.toContain("LoongCode(")
+    } finally {
+      if (previous === undefined) delete process.env.LOONGCODE_CONFIG_DIR
+      else process.env.LOONGCODE_CONFIG_DIR = previous
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test("print mode is not blocked by the guard", async () => {
     const dir = tempDir()
     const previous = process.env.LOONGCODE_CONFIG_DIR
