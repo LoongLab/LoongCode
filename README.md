@@ -70,7 +70,7 @@ The workspace becomes available once a model is active; cancelling setup exits.
 To develop LoongCode itself, run it from a checkout:
 
 ```sh
-git clone https://github.com/oliverxu1996/LoongCode.git
+git clone https://github.com/LoongLab/LoongCode.git
 cd LoongCode
 bun install
 

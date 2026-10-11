@@ -65,7 +65,7 @@ loongcode
 要开发 LoongCode 本身，可以从检出运行：
 
 ```sh
-git clone https://github.com/oliverxu1996/LoongCode.git
+git clone https://github.com/LoongLab/LoongCode.git
 cd LoongCode
 bun install
 

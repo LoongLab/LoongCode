@@ -65,7 +65,7 @@ loongcode
 LoongCode 自体を開発する場合はチェックアウトから実行します:
 
 ```sh
-git clone https://github.com/oliverxu1996/LoongCode.git
+git clone https://github.com/LoongLab/LoongCode.git
 cd LoongCode
 bun install
 

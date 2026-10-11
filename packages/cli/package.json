@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "LoongCode — a terminal coding agent that works directly in your repository",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LoongLab/LoongCode.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/LoongLab/LoongCode/issues"
+  },
   "type": "module",
   "bin": {
     "loongcode": "dist/loongcode.js"
