@@ -76,7 +76,9 @@ cd ~/my-project
 loongcode
 ```
 
-On first launch, use `/model` to configure a model, then type a task.
+On first launch LoongCode tells you no model is active. Type a task and it
+walks you through the setup first, or run `/model` yourself to choose one you
+have already configured or add a new one.
 
 ### Running from source
 

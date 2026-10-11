@@ -115,11 +115,15 @@ export class LoongCode {
   private async resolveModel(): Promise<Model> {
     const model = await this.currentModel()
     if (model === undefined) {
+      // Actionable, and only actionable: the configuration schema, the
+      // instruction to restart (the model is re-resolved per run, so nothing
+      // needs restarting) and the internal `new LoongCode({ model })` seam
+      // belong to no one reading a terminal. The interactive TUI never lets
+      // this reach the user — it offers the setup flow instead — so this text
+      // is the non-interactive path's whole explanation and has to stand alone.
       throw new Error(
-        "No active model configured. Create " +
-          `${join(configDir(), "models.json")} ` +
-          'with {"version":1,"models":[{"id":"…","name":"…","protocol":"openai"|"anthropic","endpoint":"…","model":"…","apiKey":"…","contextWindow":128000,"maxOutputTokens":8192}],"activeModelId":"…"} ' +
-          "and restart, or pass a Model to new LoongCode({ model }).",
+        "No active model configured. Use /model inside LoongCode to set one up, " +
+          `or write ${join(configDir(), "models.json")} directly.`,
       )
     }
     return model

@@ -12,7 +12,7 @@ import {
 } from "@loongcode/tui"
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
-import type { ModelLimits, ModelMessage } from "@loongcode/model"
+import type { Model, ModelLimits, ModelMessage } from "@loongcode/model"
 import type { Checkpoint, LoongCode, RewindNote, RunEvent, Session, SessionMessage } from "@loongcode/agent"
 import { CheckpointStore } from "@loongcode/agent"
 import { discardTurns, liveCheckpoints, recordRewind, rewindSession, summarizeRange, turnIndexOf, type CheckpointAdvance } from "@loongcode/agent"
@@ -53,6 +53,13 @@ export interface LoongCodeTuiOptions {
 	session: Session
 	/** Window title / header label (typically the workspace path). */
 	label?: string
+	/**
+	 * Model readiness resolved before the TUI was built, so the first frame
+	 * already reflects it and no asynchronous notice has to correct it later.
+	 * Absent means "not resolved yet": the transcript stays silent and the
+	 * footer fills in once the first refresh completes.
+	 */
+	readiness?: ModelReadiness
 	/**
 	 * Terminal to render onto. Defaults to the process terminal; tests supply a
 	 * mock so the real application can be driven without a PTY.
@@ -209,6 +216,73 @@ function truncateForRow(text: string): string {
 	return flat.length <= 72 ? flat : `${flat.slice(0, 71)}…`
 }
 
+/**
+ * The one line that tells the user how to get a model. Shared by every place
+ * that reports the state, so the startup notice, the footer and the model key
+ * cannot describe the same situation three different ways.
+ *
+ * It says no model is ACTIVE rather than none is configured, because the
+ * readiness reading covers both: `ModelManager.load` also yields no active
+ * model when a configuration holds models and none is selected. The remedy is
+ * the same either way — `/model` offers what exists and the way to add more —
+ * but claiming nothing is configured would be false for a user who has models
+ * and only needs to choose one.
+ */
+const NO_MODEL_NOTICE = "No model is active — use /model to choose or add one."
+
+/**
+ * Whether a model is ready to run.
+ *
+ * Three outcomes, never two. "Nothing is configured" and "the configuration
+ * could not be read" have different remedies, and the model layer already
+ * distinguishes them: `ModelManager.load` yields empty state only for a
+ * missing file and throws for everything else. Collapsing them would offer a
+ * broken installation the first-run setup flow — which could not save either,
+ * because every write path loads the file first — and would misreport a
+ * configuration that still holds the user's credentials as an empty one.
+ */
+export type ModelReadiness =
+	| { readonly kind: "ready"; readonly model: Model }
+	| { readonly kind: "missing" }
+	| { readonly kind: "error"; readonly message: string }
+
+/**
+ * The single place the TUI asks whether a model is available.
+ *
+ * Total by construction: an unreadable configuration is an answer to render,
+ * not an exception to escape. Two callers depend on that — the constructor
+ * refreshes the footer without awaiting it, and the run path refreshes inside
+ * its own protected region — so a rejection here would either crash the
+ * process (an unhandled rejection) or strand the UI as running.
+ *
+ * This is presentation and guidance only. Enforcement stays in the agent
+ * layer, where `run` resolves the model itself and refuses to start without
+ * one; a wrong answer here can only mis-word a failure, never cause a run.
+ */
+export async function modelReadiness(agent: LoongCode): Promise<ModelReadiness> {
+	try {
+		const model = await agent.currentModel()
+		return model === undefined ? { kind: "missing" } : { kind: "ready", model }
+	} catch (err) {
+		return { kind: "error", message: err instanceof Error ? err.message : String(err) }
+	}
+}
+
+/**
+ * Why the workspace path is unusable, or `null` when it is a directory.
+ *
+ * Reported, never enforced: startup is not blocked, no directory is
+ * substituted, and the filesystem tools keep their existing behavior (the
+ * write tool still creates missing parents, the shell still runs).
+ */
+function workspaceIssue(cwd: string): string | null {
+	try {
+		return statSync(cwd).isDirectory() ? null : `working directory is not a directory: ${cwd}`
+	} catch {
+		return `working directory does not exist: ${cwd}`
+	}
+}
+
 export class LoongCodeTui {
 	private readonly tui: TuiAltScreen
 	private readonly chat = new Container()
@@ -230,6 +304,13 @@ export class LoongCodeTui {
 
 	private readonly loader: Loader
 	private session: Session
+	/**
+	 * The last resolved model readiness, or undefined while none has been
+	 * resolved. Drives the footer's model group and nothing else: the decision
+	 * to run is taken from a fresh reading at submission time, never from this
+	 * cached one.
+	 */
+	private readiness: ModelReadiness | undefined
 	private running = false
 	/**
 	 * True for exactly the lifetime of a manual `/compact`. Application-owned:
@@ -313,6 +394,24 @@ export class LoongCodeTui {
 		this.commandContext = this.buildCommandContext()
 		this.replaySession()
 		this.updateWarning()
+
+		// The startup state, stated once and only when there is something to
+		// state. It is never re-emitted: the footer carries the fact from here
+		// on, and a notice repeated at every refresh would be noise. An absent
+		// readiness means the caller did not resolve one, which is not a fact
+		// about the model — so it says nothing rather than guessing.
+		this.readiness = options.readiness
+		if (options.readiness?.kind === "missing") {
+			this.chat.addChild(notice(NO_MODEL_NOTICE))
+		} else if (options.readiness?.kind === "error") {
+			this.chat.addChild(errorNotice(options.readiness.message))
+		}
+		// A path that cannot be used is reported before the first tool call
+		// rather than discovered by it. Nothing is blocked and nothing is
+		// substituted: the session keeps the directory it was given.
+		const workspace = workspaceIssue(this.session.cwd)
+		if (workspace !== null) this.chat.addChild(errorNotice(workspace))
+
 		// The footer describes the session that is open, including the runs it
 		// recorded in an earlier process; nothing here is invented to fill a
 		// gap the persisted record does not cover.
@@ -383,6 +482,13 @@ export class LoongCodeTui {
 				return new Promise<string | null>(resolve => {
 					this.askState = { label, resolve: value => {
 						this.status.clear()
+						// The composer holds the prompt's text, never the user's
+						// own: a command is only reachable after the editor has
+						// cleared itself, so whatever is here was typed into this
+						// prompt. Clear it before lifting the mask — rendering is
+						// batched, so clearing first means no frame can ever show
+						// a secret in the clear.
+						this.editor.setText("")
 						this.editor.setMasked(false)
 						this.tui.setFocus(this.editor)
 						resolve(value)
@@ -566,21 +672,46 @@ export class LoongCodeTui {
 		return undefined
 	}
 
+	/**
+	 * Switches to the next configured model.
+	 *
+	 * Every step lives inside one `try`: this runs from a keypress, on a promise
+	 * nobody awaits, so a rejection that escaped would end the process rather
+	 * than the switch. `activateModel` is awaited for the same reason — left
+	 * floating, its rejection would escape the handler that is meant to catch
+	 * it. A failure is reported and the model in use is left alone; the success
+	 * notice is only reached once the switch has actually been persisted.
+	 */
 	private async cycleModel(): Promise<void> {
-		const manager = await this.options.agent.modelManager()
-		const models = manager.list()
-		if (models.length < 2) {
-			this.chat.addChild(notice("only one model configured"))
-			return
+		try {
+			const models = (await this.options.agent.modelManager()).list()
+			if (models.length === 0) {
+				// There is nothing to cycle to, and saying "only one model" would
+				// describe a configuration that does not exist.
+				this.chat.addChild(notice(NO_MODEL_NOTICE))
+				this.tui.requestRender()
+				return
+			}
+			if (models.length === 1) {
+				this.chat.addChild(notice("only one model configured"))
+				return
+			}
+			const currentId = (await this.options.agent.currentModel())?.id
+			const index = models.findIndex(m => m.id === currentId)
+			const next = models[(index + 1) % models.length]!
+			await this.options.agent.activateModel(next.id)
+			this.chat.addChild(notice(`switched model: ${next.id}`))
+			// The footer's model identity and window must follow the switch.
+			await this.refreshFooterData()
+			this.tui.requestRender()
+		} catch (error) {
+			// Both ways this can fail — an unreadable configuration, and a switch
+			// that could not be persisted — are reported the same way every other
+			// model failure is. The footer still names the model actually in use,
+			// because nothing here claims a switch that did not happen.
+			this.chat.addChild(errorNotice(error instanceof Error ? error.message : String(error)))
+			this.tui.requestRender()
 		}
-		const currentId = (await this.options.agent.currentModel())?.id
-		const index = models.findIndex(m => m.id === currentId)
-		const next = models[(index + 1) % models.length]!
-		this.options.agent.activateModel(next.id)
-		this.chat.addChild(notice(`switched model: ${next.id}`))
-		// The footer's model identity and window must follow the switch.
-		await this.refreshFooterData()
-		this.tui.requestRender()
 	}
 
 	private shutdown(): never {
@@ -653,8 +784,66 @@ export class LoongCodeTui {
 			return
 		}
 
+		// The authoritative model check, read fresh here rather than trusting
+		// the startup reading: that one described the launch, this one decides
+		// what happens to the task in hand. The agent layer enforces the same
+		// rule again before it runs anything, so the worst a wrong answer here
+		// could do is word the failure badly — never start a run without a
+		// model, and never open setup for a model that is already configured.
+		const readiness = await modelReadiness(this.options.agent)
+		if (readiness.kind !== "ready") {
+			await this.setUpModel(text, readiness)
+			return
+		}
+
 		this.chat.addChild(userMessage(text))
 		await this.startRun(expandFileReferences(text, this.session.cwd))
+	}
+
+	/**
+	 * Guides a task that arrived without a usable model into the existing
+	 * `/model` setup, then hands the task back.
+	 *
+	 * The composer is the task's home for the whole detour: `restorePrompt` runs
+	 * in a `finally`, so cancellation, a successful save, a failed save, an
+	 * unreadable configuration and an unexpected throw all leave the task
+	 * exactly where the user can submit it. Nothing runs by itself — the user
+	 * decides when the task is ready to send — and the composer is replaced
+	 * rather than appended to, so a repeated attempt cannot double the text.
+	 * That replacement also clears whatever the setup prompts last left in the
+	 * composer, which is the only thing that can be there: a command is only
+	 * reachable after the editor has cleared itself, and its prompts own the
+	 * editor while they are open.
+	 */
+	private async setUpModel(task: string, readiness: ModelReadiness): Promise<void> {
+		try {
+			if (readiness.kind === "error") {
+				// Not an unconfigured installation: the configuration exists and
+				// cannot be read. The wizard could not save either — every write
+				// path loads the file first — so the honest answer is to report
+				// the file and leave it untouched.
+				this.chat.addChild(errorNotice(readiness.message))
+				return
+			}
+
+			const command = findCommand("model")
+			try {
+				await command?.execute(this.commandContext, "")
+			} catch (error) {
+				// The same contract as any other command: a failure is a notice.
+				this.chat.addChild(errorNotice(
+					`/model failed: ${error instanceof Error ? error.message : String(error)}`,
+				))
+			}
+			await this.refreshFooterData()
+			// Still nothing to run with: the user cancelled, or the save failed
+			// and `addModel` has already said why. Restate the standing fact so
+			// the situation is never ambiguous.
+			if (this.readiness?.kind === "missing") this.chat.addChild(notice(NO_MODEL_NOTICE))
+		} finally {
+			this.restorePrompt(task)
+			this.tui.requestRender()
+		}
 	}
 
 	private async startRun(text: string): Promise<void> {
@@ -665,13 +854,17 @@ export class LoongCodeTui {
 		this.contextCleared = false
 		this.runBeforeRewind = false
 		this.abort = new AbortController()
-		// The model is resolved per run, so the footer's budget is refreshed
-		// here: a switch made by /model or Ctrl-P must not leave it stale.
-		await this.refreshFooterData()
-		this.showSpinner("working… (esc to interrupt)")
 
 		let aborted = false
 		try {
+			// The model is resolved per run, so the footer's budget is refreshed
+			// here: a switch made by /model or Ctrl-P must not leave it stale.
+			// This is the first statement of the protected region rather than the
+			// last of the prelude: a failure while preparing the run must reach
+			// the same `finally` as a failure during it, or `running` would stay
+			// set and every later task would be swallowed as steering.
+			await this.refreshFooterData()
+			this.showSpinner("working… (esc to interrupt)")
 			const result = await this.options.agent.run(this.session, text, {
 				signal: this.abort.signal,
 				onEvent: event => this.handleRunEvent(event),
@@ -833,6 +1026,7 @@ export class LoongCodeTui {
 			compacting: this.compacting,
 			modelId: this.modelId,
 			limits: this.modelLimits,
+			modelMissing: this.readiness?.kind === "missing",
 			compactThresholdPct: this.compactThresholdPct,
 			lastCallUsage: this.display.lastCallUsage,
 			runRequests: this.display.runRequests,
@@ -863,8 +1057,11 @@ export class LoongCodeTui {
 
 	private async refreshFooterData(): Promise<void> {
 		// Re-read per run and on every model switch: the footer must describe
-		// the model actually in use, never a previous one.
-		const model = await this.options.agent.currentModel()
+		// the model actually in use, never a previous one. Total by
+		// construction — an unreadable configuration is reported by the footer,
+		// never thrown at a caller that is not waiting to catch it.
+		this.readiness = await modelReadiness(this.options.agent)
+		const model = this.readiness.kind === "ready" ? this.readiness.model : undefined
 		this.modelId = model?.id
 		this.modelLimits = model?.limits
 		try {

@@ -112,6 +112,18 @@ export class AISDKRuntime {
             abortSignal: linked.signal,
             // Retries are owned here, not by the SDK.
             maxRetries: 0,
+            // The SDK's default `onError` writes the raw error object to the
+            // console — which, in a full-screen TUI, means over the interface:
+            // it prints the provider body, the request payload (the whole
+            // conversation and every tool schema), and its own stack frames,
+            // and it does so once per attempt rather than once per failure.
+            // Worse, unlike this package's errors it is not scrubbed, so a
+            // provider that echoes the credential puts it on screen. This is
+            // observation only: the error still arrives in `fullStream` and is
+            // classified, retried and reported exactly once, by the caller.
+            // Reporting it a second time here could only duplicate that — and
+            // a second sink could leak what the first one carefully avoids.
+            onError: () => {},
           })
 
           for await (const part of result.fullStream) {

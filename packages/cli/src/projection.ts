@@ -162,6 +162,13 @@ export interface FooterInput {
   readonly modelId: string | undefined
   /** Limits of the model in use, when one is resolved. */
   readonly limits: ModelLimits | undefined
+  /**
+   * The configuration loaded successfully and holds no active model. Distinct
+   * from a model that has simply not been resolved yet (`modelId` undefined
+   * with this absent, which renders nothing): the user needs to be told there
+   * is nothing to run with, not left to infer it from a missing field.
+   */
+  readonly modelMissing?: boolean
   /** Share of the input budget at which proactive compaction begins. */
   readonly compactThresholdPct: number | undefined
   /** The most recent completed model call's usage, if any call has finished. */
@@ -358,8 +365,15 @@ function footerRow1(input: FooterInput): FooterRow {
   }
 
   if (input.modelId !== undefined && input.limits !== undefined) {
+    // A resolved model is a fact and is shown. The two readings are taken
+    // together, so they cannot disagree — and if a stale flag ever survived
+    // one, hiding the model behind it would be the worse error.
     groups.push({ parts: [{ text: truncateModelId(input.modelId), tone: "dim", drop: 1 }] })
     groups.push({ parts: [{ text: `${formatTokens(input.limits.contextWindow)} window`, tone: "dim", drop: 2 }] })
+  } else if (input.modelMissing === true) {
+    // Stands where the model id would: the same fact the transcript states,
+    // in the place a configured user reads their model from.
+    groups.push({ parts: [{ text: "no model", tone: "dim", drop: 1 }] })
   }
 
   return { groups }
