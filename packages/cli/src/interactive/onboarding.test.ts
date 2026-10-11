@@ -19,14 +19,88 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Terminal } from "@loongcode/tui"
 import { LoongCode, type Session } from "@loongcode/agent"
-import { LoongCodeTui, modelReadiness } from "./app"
+import { LoongCodeTui, SETUP_TEST_TIMEOUT_MS, modelReadiness } from "./app"
 import { parseScreen } from "./view/testing"
-import { openaiChunk, sse, startMockProvider } from "../../../model/src/test-support"
+import {
+	anthropicTextResponse,
+	openaiChunk,
+	openaiTextResponse,
+	sse,
+	startMockProvider,
+} from "../../../model/src/test-support"
+
+/**
+ * What a provider answers.
+ *
+ * The setup sequence probes with a complete request (no streaming), while a
+ * task run streams — one mock serves both, so a test can configure a model and
+ * then use it. The non-streaming body is shaped for the protocol the request
+ * was made on, which is also how a test tells the two adapters apart.
+ */
+function providerReply(path: string, body: unknown): Response {
+	const streamed = typeof body === "object" && body !== null &&
+		(body as { stream?: unknown }).stream === true
+	if (streamed) {
+		return sse([
+			openaiChunk({ role: "assistant", content: "All tests pass now." }, null),
+			openaiChunk({}, "stop"),
+			null,
+		])
+	}
+	return path.endsWith("/messages") ? anthropicTextResponse("pong") : openaiTextResponse("pong")
+}
 
 const ENTER = "\r"
 const ESC = "\x1b"
 const DOWN = "\x1b[B"
 const UP = "\x1b[A"
+/** Delete to line start — the editor's own key for clearing a seeded field. */
+const CTRL_U = "\x15"
+
+interface SetupInput {
+	readonly protocol?: "openai" | "anthropic"
+	readonly endpoint: string
+	readonly apiKey?: string
+	readonly model?: string
+}
+
+/**
+ * Walks the approved sequence: protocol, address, key, model identifier, and
+ * the connection test that follows — stopping on the screen the test produced.
+ */
+async function driveSetupToTest(h: Harness, input: SetupInput): Promise<void> {
+	// Step 1 — protocol. The first row is `OpenAI-compatible`.
+	if (input.protocol === "anthropic") {
+		h.tty.feed(DOWN)
+		await flush(8)
+	}
+	h.tty.feed(ENTER)
+	await flush(16)
+	// Step 2 — the address, seeded with the protocol's own default.
+	h.tty.feed(CTRL_U)
+	await flush(4)
+	h.tty.feed(input.endpoint)
+	await flush()
+	h.tty.feed(ENTER)
+	await flush(16)
+	// Step 3 — the key.
+	h.tty.feed(input.apiKey ?? "sk-dummy-not-a-real-key")
+	await flush()
+	h.tty.feed(ENTER)
+	await flush(16)
+	// Step 4 — the model identifier, and the test it triggers.
+	h.tty.feed(input.model ?? "probe-model")
+	await flush()
+	h.tty.feed(ENTER)
+	await flush(80)
+}
+
+/** The whole sequence, through the explicit save. */
+async function driveSetupToSaved(h: Harness, input: SetupInput): Promise<void> {
+	await driveSetupToTest(h, input)
+	h.tty.feed(ENTER) // `Save and Enter Workspace`, the first row
+	await flush(60)
+}
 
 interface Tty {
 	readonly terminal: Terminal
@@ -217,21 +291,34 @@ const validConfig = (endpoint: string): string => JSON.stringify({
 // ---------------------------------------------------------------------------
 
 describe("the gate", () => {
-	test("an unconfigured installation is put into setup and told how to get a model", async () => {
+	test("an unconfigured installation opens the setup screen, not the workspace", async () => {
 		const h = await mount()
 		const view = screen(h)
-		expect(view).toContain("No model is active — use /model to choose or add one.")
-		// The footer states the same fact where a configured user reads a model id.
-		expect(view).toContain("no model")
-		// The gate is open: setup is on screen and the composer is not. The flow
-		// itself must have started — being merely classified as `setup` would
-		// leave the user staring at a state with nothing to do in it.
+		// The gate is open, and what it shows is the first step of the sequence.
 		expect(phaseOf(h)).toBe("setup")
-		expect(view).toContain("Set up a model to continue.")
-		expect(view).toContain("Add model…")
+		expect(view).toContain("Model Setup")
+		expect(view).toContain("Configure your model")
+		expect(view).toContain("Select API protocol")
 		expect(slotHoldsEditor(h)).toBe(false)
-		// Nothing failed, so nothing is reported as a failure.
+		// No banner, no composer, no idle state: none of the workspace is here.
+		expect(view).not.toContain("an opinionated coding agent")
+		expect(view).not.toContain("Idle")
+		// The footer states the one fact that matters, and nothing it measured.
+		expect(view).toContain("no model")
+		expect(view).toContain("Model setup in progress")
 		expect(view).not.toContain("error:")
+		expect(rejections).toEqual([])
+	})
+
+	test("the protocol menu is exactly the two compatible protocols", async () => {
+		const h = await mount()
+		const view = screen(h)
+		expect(view).toContain("OpenAI-compatible")
+		expect(view).toContain("Anthropic-compatible")
+		// No vendor-name choices, and no third protocol.
+		expect(view).not.toContain("OpenAI API")
+		expect(view).not.toContain("Anthropic API")
+		expect(view).not.toContain("Google")
 		expect(rejections).toEqual([])
 	})
 
@@ -242,30 +329,31 @@ describe("the gate", () => {
 		expect(phaseOf(h)).toBe("normal")
 		expect(view).not.toContain("No model is active")
 		expect(view).not.toContain("no model")
-		expect(view).not.toContain("Set up a model to continue.")
+		expect(view).not.toContain("Select API protocol")
 		expect(slotHoldsEditor(h)).toBe(true)
+		// Suppression belongs to setup alone: a configured user still gets the
+		// startup banner they always had.
+		expect(view).toContain("an opinionated coding agent")
 		expect(view).toContain("probe")
 		expect(view).toContain("128k window")
 		expect(rejections).toEqual([])
 	})
 
-	test("configured models with none selected are not described as unconfigured", async () => {
-		// `ModelManager` accepts this state — models exist and none is active —
-		// and the notice must not claim the configuration is empty.
-		writeModels(JSON.stringify({ version: 1, models: [configuredModel()], activeModelId: null }))
+	test("configured models with none active still require the sequence", async () => {
+		// `ModelManager` accepts this state — models exist and none is active.
+		// The gate is shut either way, and what it shows is protocol selection:
+		// the approved sequence has no "pick an existing one" step.
+		const config = JSON.stringify({ version: 1, models: [configuredModel()], activeModelId: null })
+		writeModels(config)
 		const h = await mount()
 		const view = screen(h)
-		expect(view).toContain("No model is active")
-		expect(view).toContain("no model")
 		expect(phaseOf(h)).toBe("setup")
+		expect(view).toContain("Select API protocol")
+		expect(view).toContain("no model")
 		expect(rejections).toEqual([])
 
-		// And the configured model is genuinely on offer: the setup flow opens
-		// on its own and lists it, so choosing it needs no further command.
-		const picker = screen(h)
-		expect(picker).toContain("probe")
-		expect(picker).toContain("Add model…")
-		expect(rejections).toEqual([])
+		// The configuration the user already had is not touched by looking at it.
+		expect(readFileSync(modelsFile(), "utf-8")).toBe(config)
 	})
 
 	test("a workspace that does not exist is reported without blocking startup", async () => {
@@ -302,7 +390,10 @@ describe("the gate", () => {
 			expect(resumed.session.messages.length).toBeGreaterThan(0)
 			expect(view).not.toContain("HISTORY-MARKER")
 			expect(view).not.toContain("the earlier task")
-			expect(view).toContain("Set up a model to continue.")
+			// No banner either: the setup screen is composed instead of the
+			// empty-workspace hero, not on top of it.
+			expect(view).not.toContain("an opinionated coding agent")
+			expect(view).toContain("Select API protocol")
 			expect(phaseOf(resumed)).toBe("setup")
 			expect(rejections).toEqual([])
 		} finally {
@@ -311,11 +402,7 @@ describe("the gate", () => {
 	})
 
 	test("a previous session's run statistics stay out of the setup footer", async () => {
-		const provider = await startMockProvider(() => sse([
-			openaiChunk({ role: "assistant", content: "done" }, null),
-			openaiChunk({}, "stop"),
-			null,
-		]))
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
 		try {
 			// A session that has genuinely run: its figures are on the footer
 			// while the workspace is open...
@@ -345,11 +432,7 @@ describe("the gate", () => {
 	})
 
 	test("the workspace's footer information returns with the transition", async () => {
-		const provider = await startMockProvider(() => sse([
-			openaiChunk({ role: "assistant", content: "done" }, null),
-			openaiChunk({}, "stop"),
-			null,
-		]))
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
 		try {
 			writeModels(validConfig(`${provider.url}/v1`))
 			const h = await mount()
@@ -367,24 +450,7 @@ describe("the gate", () => {
 
 			// Complete setup: the figures the working session showed are back,
 			// because they were never erased — only withheld.
-			h.tty.feed(ENTER) // Add model…
-			await flush(16)
-			h.tty.feed(ENTER) // the protocol
-			await flush(16)
-			h.tty.feed(`${provider.url}/v1`)
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("probe-model")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("sk-dummy-not-a-real-key")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed(ENTER) // commit: Add model
-			await flush(30)
+			await driveSetupToSaved(h, { endpoint: `${provider.url}/v1` })
 
 			const after = screen(h)
 			expect(phaseOf(h)).toBe("normal")
@@ -442,34 +508,13 @@ describe("a model that goes away under a running session", () => {
 	})
 
 	test("completing setup restores the task, and only the user runs it", async () => {
-		const provider = await startMockProvider(() => sse([
-			openaiChunk({ role: "assistant", content: "All tests pass now." }, null),
-			openaiChunk({}, "stop"),
-			null,
-		]))
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
 		try {
 			const h = await lostModel()
 			await type(h, "fix the failing test")
 			expect(phaseOf(h)).toBe("setup")
 
-			h.tty.feed(ENTER) // Add model…
-			await flush(16)
-			h.tty.feed(ENTER) // the protocol
-			await flush(16)
-			h.tty.feed(`${provider.url}/v1`)
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("probe-model")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("sk-dummy-not-a-real-key")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed(ENTER) // commit: Add model
-			await flush(30)
+			await driveSetupToSaved(h, { endpoint: `${provider.url}/v1` })
 
 			// The gate is open and the task is back in the composer — not run.
 			expect(phaseOf(h)).toBe("normal")
@@ -523,37 +568,15 @@ describe("a model that goes away under a running session", () => {
 // ---------------------------------------------------------------------------
 
 describe("first-run setup through the gate", () => {
-	test("the wizard is offered unasked, and the normal interface follows it", async () => {
-		const provider = await startMockProvider(() => sse([
-			openaiChunk({ role: "assistant", content: "All tests pass now." }, null),
-			openaiChunk({}, "stop"),
-			null,
-		]))
+	test("the sequence is offered unasked, and the normal interface follows it", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
 		try {
 			const h = await mount()
-			// The setup flow is the /model picker, not a second wizard, and it
-			// is already open.
+			// The sequence is already open on its first step.
 			expect(phaseOf(h)).toBe("setup")
-			expect(screen(h)).toContain("Add model…")
+			expect(screen(h)).toContain("Select API protocol")
 
-			h.tty.feed(ENTER) // Add model…
-			await flush(16)
-			h.tty.feed(ENTER) // the protocol
-			await flush(16)
-			h.tty.feed(`${provider.url}/v1`)
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("probe-model")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("sk-dummy-not-a-real-key")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed(ENTER) // commit: Add model
-			await flush(30)
+			await driveSetupToSaved(h, { endpoint: `${provider.url}/v1` })
 
 			expect(phaseOf(h)).toBe("normal")
 			expect(slotHoldsEditor(h)).toBe(true)
@@ -572,39 +595,323 @@ describe("first-run setup through the gate", () => {
 		}
 	})
 
-	test("a cancelled api-key prompt leaves no secret anywhere", async () => {
+	test("the API key is masked, and never left behind", async () => {
 		const h = await mount()
-		h.tty.feed(ENTER) // Add model…
+		h.tty.feed(ENTER) // step 1: OpenAI-compatible
 		await flush(16)
-		h.tty.feed(ENTER) // the protocol
-		await flush(16)
+		h.tty.feed(CTRL_U)
+		await flush(4)
 		h.tty.feed("http://127.0.0.1:9/v1")
 		await flush()
 		h.tty.feed(ENTER)
 		await flush(16)
-		h.tty.feed("probe-model")
-		await flush()
-		h.tty.feed(ENTER)
-		await flush(16)
-		expect(screen(h)).toContain("api key:")
-		// The prompt is typed into the editor, so the editor is on screen here —
-		// and only here.
-		expect(slotHoldsEditor(h)).toBe(true)
+		expect(screen(h)).toContain("Step 3/5")
+		expect(screen(h)).toContain("API Key")
 
-		// While the prompt is open the value is masked, never echoed.
+		// While the field is open the value is masked, never echoed.
 		h.tty.feed("sk-dummy-secret-value")
 		await flush(16)
 		expect(screen(h)).not.toContain("sk-dummy-secret-value")
+		expect(screen(h)).toContain("***")
 
-		h.tty.feed(ESC)
+		h.tty.feed(ESC) // back to the address step
 		await flush(24)
 
-		// The prompt's content belongs to the prompt: cancelling must not leave
-		// it sitting in a composer, unmasked, for the next screenshot.
-		expect(composer(h)).toBe("")
+		// The field's content belongs to the field: leaving it must not leave
+		// the key sitting anywhere, unmasked, for the next screenshot...
 		expect(screen(h)).not.toContain("sk-dummy-secret-value")
-		expect(slotHoldsEditor(h)).toBe(false)
+		expect(composer(h)).not.toContain("sk-dummy-secret-value")
+		// ...while what the user did enter earlier comes back with the step.
+		expect(composer(h)).toBe("http://127.0.0.1:9/v1")
 		expect(existsSync(modelsFile())).toBe(false)
+		expect(rejections).toEqual([])
+	})
+})
+
+/**
+ * Runs `body` with the probe's own timeout fired immediately.
+ *
+ * The timeout is what is under test, and waiting its real duration would make
+ * the suite unusable. Only that one delay is compressed — every other timer in
+ * the process keeps its real duration — and the timers it created are counted
+ * so a test can prove they were also cleared.
+ */
+async function withImmediateProbeTimeout<T>(
+	body: () => Promise<T>,
+): Promise<{ result: T; created: number; cleared: number }> {
+	const realSetTimeout = globalThis.setTimeout
+	const realClearTimeout = globalThis.clearTimeout
+	const probeTimers = new Set<unknown>()
+	let created = 0
+	let cleared = 0
+	globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+		if (ms !== SETUP_TEST_TIMEOUT_MS) return realSetTimeout(fn, ms)
+		created += 1
+		const id = realSetTimeout(fn, 0)
+		probeTimers.add(id)
+		return id
+	}) as unknown as typeof setTimeout
+	globalThis.clearTimeout = ((id?: unknown) => {
+		if (probeTimers.has(id)) cleared += 1
+		realClearTimeout(id as never)
+	}) as typeof clearTimeout
+	try {
+		return { result: await body(), created, cleared }
+	} finally {
+		globalThis.setTimeout = realSetTimeout
+		globalThis.clearTimeout = realClearTimeout
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The connection test — a real request, or no way forward
+// ---------------------------------------------------------------------------
+
+describe("the model test", () => {
+	test("sends a real request through the selected protocol's adapter", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			const h = await mount()
+			await driveSetupToTest(h, { endpoint: `${provider.url}/v1` })
+
+			// A request actually arrived, shaped like the protocol chosen.
+			expect(provider.requests.length).toBeGreaterThan(0)
+			expect(provider.requests.at(-1)!.path).toBe("/v1/chat/completions")
+			expect(screen(h)).toContain("✓ Model test succeeded")
+			expect(screen(h)).toContain("OpenAI-compatible")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("uses the Anthropic adapter when Anthropic is chosen", async () => {
+		// The label is not the evidence: the path the request lands on is, and
+		// the two adapters speak different wire protocols.
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			const h = await mount()
+			await driveSetupToTest(h, { protocol: "anthropic", endpoint: `${provider.url}/v1` })
+
+			expect(provider.requests.at(-1)!.path).toBe("/v1/messages")
+			expect(screen(h)).toContain("✓ Model test succeeded")
+			expect(screen(h)).toContain("Anthropic-compatible")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a passing test saves nothing until the user confirms", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			const h = await mount()
+			await driveSetupToTest(h, { endpoint: `${provider.url}/v1` })
+			expect(screen(h)).toContain("✓ Model test succeeded")
+			// A successful call is not a save.
+			expect(existsSync(modelsFile())).toBe(false)
+
+			// Nor is declining to save: choosing to edit leaves nothing behind.
+			h.tty.feed(DOWN)
+			await flush(8)
+			h.tty.feed(ENTER) // Return to Edit Configuration
+			await flush(24)
+			expect(screen(h)).toContain("Step 4/5")
+			expect(composer(h)).toBe("probe-model")
+			expect(existsSync(modelsFile())).toBe(false)
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a failed test offers no way to save, and keeps the configuration", async () => {
+		const provider = await startMockProvider(() =>
+			new Response(
+				JSON.stringify({ error: { message: "Incorrect API key provided: sk-dummy-not-a-real-key." } }),
+				{ status: 401, headers: { "content-type": "application/json" } },
+			))
+		try {
+			const h = await mount()
+			await driveSetupToTest(h, { endpoint: `${provider.url}/v1` })
+
+			const view = screen(h)
+			expect(view).toContain("✗ Model test failed")
+			expect(view).toContain("Authentication failed")
+			// The save action does not exist on this screen.
+			expect(view).not.toContain("Save and Enter Workspace")
+			// The credential the provider echoed back is nowhere on screen.
+			expect(view).not.toContain("sk-dummy-not-a-real-key")
+			expect(existsSync(modelsFile())).toBe(false)
+
+			// The configuration is retained: editing returns to the field.
+			h.tty.feed(ENTER) // Return to Edit Configuration, the first row
+			await flush(24)
+			expect(screen(h)).toContain("Step 4/5")
+			expect(composer(h)).toBe("probe-model")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a cancelled test is a failure, never a success", async () => {
+		// A provider that accepts the request and never answers.
+		const provider = await startMockProvider(() => new Promise<Response>(() => {}))
+		try {
+			const h = await mount()
+			h.tty.feed(ENTER) // step 1
+			await flush(16)
+			h.tty.feed(CTRL_U)
+			await flush(4)
+			h.tty.feed(`${provider.url}/v1`)
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("sk-dummy-not-a-real-key")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed("probe-model")
+			await flush()
+			h.tty.feed(ENTER) // the test starts, and hangs
+			await flush(40)
+			expect(screen(h)).toContain("Testing model…")
+
+			h.tty.feed(ESC) // cancel it
+			await flush(40)
+
+			const view = screen(h)
+			expect(view).toContain("✗ Model test failed")
+			expect(view).toContain("cancelled")
+			expect(view).not.toContain("Save and Enter Workspace")
+			expect(existsSync(modelsFile())).toBe(false)
+			expect(phaseOf(h)).toBe("setup")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a probe that outlives the timeout fails, and a late answer cannot revive it", async () => {
+		// The provider answers, but well after the timeout has already fired.
+		const provider = await startMockProvider(() =>
+			new Promise<Response>(resolve => {
+				setTimeout(() => resolve(openaiTextResponse("late")), 400)
+			}))
+		try {
+			const h = await mount()
+			const { created, cleared } = await withImmediateProbeTimeout(() =>
+				driveSetupToTest(h, { endpoint: `${provider.url}/v1` }))
+
+			const view = screen(h)
+			expect(view).toContain("✗ Model test failed")
+			expect(view).toContain("timed out")
+			expect(view).not.toContain("Save and Enter Workspace")
+			// The timer that carried the deadline is not left behind.
+			expect(created).toBe(1)
+			expect(cleared).toBe(1)
+
+			// The response that arrives afterwards is not a result: the request
+			// was aborted, and a success screen cannot appear late.
+			await flush(200)
+			const after = screen(h)
+			expect(after).toContain("✗ Model test failed")
+			expect(after).not.toContain("Save and Enter Workspace")
+			expect(existsSync(modelsFile())).toBe(false)
+			expect(phaseOf(h)).toBe("setup")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("the provider's own words reach the user", async () => {
+		// A rejected model identifier comes back as a failed request — the
+		// adapter does not have a code for it — so the detail line is where the
+		// difference between a wrong model and an unreachable host survives.
+		const provider = await startMockProvider(() =>
+			new Response(
+				JSON.stringify({ error: { message: "The model `nope-9000` does not exist", type: "invalid_request_error" } }),
+				{ status: 400, headers: { "content-type": "application/json" } },
+			))
+		try {
+			const h = await mount()
+			await driveSetupToTest(h, { endpoint: `${provider.url}/v1`, model: "nope-9000" })
+
+			const view = screen(h)
+			expect(view).toContain("✗ Model test failed")
+			expect(view).toContain("does not exist")
+			expect(view).not.toContain("Save and Enter Workspace")
+			expect(existsSync(modelsFile())).toBe(false)
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a configuration that cannot be persisted keeps the user in setup", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			const h = await mount()
+			await driveSetupToTest(h, { endpoint: `${provider.url}/v1` })
+
+			const agent = h.agent as unknown as { configureModel(config: unknown): Promise<void> }
+			agent.configureModel = async () => {
+				throw new Error("probe: could not write models.json")
+			}
+			h.tty.feed(ENTER) // Save and Enter Workspace
+			await flush(40)
+
+			const view = screen(h)
+			expect(view).toContain("✗ Could not save the configuration")
+			expect(view).toContain("probe: could not write models.json")
+			// No success is claimed, and the workspace is not entered.
+			expect(phaseOf(h)).toBe("setup")
+			expect(view).not.toContain("Idle")
+			expect(existsSync(modelsFile())).toBe(false)
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+})
+
+// ---------------------------------------------------------------------------
+// The other way in: /model → Add model…
+// ---------------------------------------------------------------------------
+
+describe("adding a model from the workspace", () => {
+	test("runs the same sequence, and the workspace comes back", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			writeModels(validConfig(`${provider.url}/v1`))
+			const h = await mount()
+			expect(phaseOf(h)).toBe("normal")
+
+			// `/model` → `Add model…` — the workspace command takes over the
+			// screen with the one configuration sequence there is.
+			await type(h, "/model")
+			h.tty.feed(DOWN)
+			await flush(8)
+			h.tty.feed(ENTER)
+			await flush(24)
+			expect(phaseOf(h)).toBe("setup")
+			expect(screen(h)).toContain("Select API protocol")
+
+			// A model name that is not already configured, so no id conflict.
+			await driveSetupToSaved(h, { endpoint: `${provider.url}/v1`, model: "second-model" })
+
+			expect(phaseOf(h)).toBe("normal")
+			expect(slotHoldsEditor(h)).toBe(true)
+			const saved = JSON.parse(readFileSync(modelsFile(), "utf-8"))
+			expect(saved.models.map((m: { id: string }) => m.id)).toEqual(["probe", "second-model"])
+			expect(saved.activeModelId).toBe("second-model")
+			expect(screen(h)).toContain("second-model")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
 	})
 })
 
@@ -661,10 +968,11 @@ describe("an unusable configuration", () => {
 				// file first, so it could not save.
 				expect(phaseOf(h)).toBe("setup")
 				const recovery = screen(h)
-				expect(recovery).toContain("Correct the model configuration to continue.")
+				expect(recovery).toContain("LoongCode cannot read your model configuration.")
 				expect(recovery).toContain("Retry")
 				expect(recovery).toContain("Exit")
-				expect(recovery).not.toContain("Add model…")
+				// The setup sequence is never offered here: it could not save.
+				expect(recovery).not.toContain("Select API protocol")
 				expect(rejections).toEqual([])
 			} finally {
 				if (testCase.unreadable === true) chmodSync(modelsFile(), 0o600)
@@ -702,11 +1010,7 @@ describe("an unusable configuration", () => {
 
 describe("recovery", () => {
 	test("a failure while preparing a run restores idle, and the next task runs", async () => {
-		const provider = await startMockProvider(() => sse([
-			openaiChunk({ role: "assistant", content: "done" }, null),
-			openaiChunk({}, "stop"),
-			null,
-		]))
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
 		try {
 			writeModels(validConfig(`${provider.url}/v1`))
 			const h = await mount()
@@ -735,7 +1039,7 @@ describe("recovery", () => {
 			await type(h, "do the thing again")
 			await flush(40)
 			expect(h.session.messages.filter(m => m.role === "user").length).toBe(1)
-			expect(screen(h)).toContain("done")
+			expect(screen(h)).toContain("All tests pass now.")
 			expect(rejections).toEqual([])
 		} finally {
 			await provider.close()
@@ -750,12 +1054,15 @@ describe("recovery", () => {
 describe("Ctrl+P", () => {
 	test("with nothing configured it changes nothing while the gate is closed", async () => {
 		const h = await mount()
+		const before = screen(h)
 		h.tty.feed("\x10") // ctrl+p
 		await flush(16)
 		const view = screen(h)
-		expect(view).toContain("No model is active")
 		expect(view).not.toContain("only one model configured")
 		expect(view).not.toContain("switched model")
+		// The setup screen is still the setup screen.
+		expect(view).toContain("Select API protocol")
+		expect(view).toBe(before)
 		expect(phaseOf(h)).toBe("setup")
 		expect(rejections).toEqual([])
 	})
@@ -855,18 +1162,12 @@ describe("no bypass", () => {
 			activeModelId: null,
 		}))
 		const h = await mount()
-		// Down past both models to `Add model…`, then into the wizard, which is
-		// the one state where no selector owns the keyboard and the
-		// application's own listener decides.
-		h.tty.feed(DOWN)
-		await flush(8)
-		h.tty.feed(DOWN)
-		await flush(8)
-		h.tty.feed(ENTER)
+		// Past the protocol list into the address field, which is the one state
+		// where no selector owns the keyboard and the application's own
+		// listener decides.
+		h.tty.feed(ENTER) // step 1: OpenAI-compatible
 		await flush(16)
-		h.tty.feed(ENTER) // the protocol
-		await flush(16)
-		expect(screen(h)).toContain("endpoint (default")
+		expect(screen(h)).toContain("Step 2/5")
 
 		const app = h.app as unknown as {
 			handleGlobalInput(data: string): { consume?: boolean } | undefined
@@ -885,37 +1186,37 @@ describe("no bypass", () => {
 	})
 
 	test("the interactions setup itself needs still work", async () => {
-		writeModels(JSON.stringify({ version: 1, models: [configuredModel()], activeModelId: null }))
+		const config = JSON.stringify({ version: 1, models: [configuredModel()], activeModelId: null })
+		writeModels(config)
 		const h = await mount()
-		expect(screen(h)).toContain("probe")
 
-		// Navigation and selection: down to `Add model…`, then choose it.
+		// Navigation: down to the second protocol, and choosing it moves on.
 		h.tty.feed(DOWN)
 		await flush(8)
 		h.tty.feed(ENTER)
 		await flush(16)
-		expect(screen(h)).toContain("Protocol")
-		h.tty.feed(ENTER) // the protocol
-		await flush(16)
-		expect(screen(h)).toContain("endpoint (default")
+		expect(screen(h)).toContain("Step 2/5")
 
-		// Escape cancels the prompt without answering it.
+		// Escape goes back a step without answering it.
 		h.tty.feed(ESC)
 		await flush(24)
+		expect(screen(h)).toContain("Select API protocol")
 		expect(phaseOf(h)).toBe("setup")
-		expect(existsSync(modelsFile())).toBe(true)
+		expect(readFileSync(modelsFile(), "utf-8")).toBe(config)
 		expect(rejections).toEqual([])
 	})
 
-	test("Ctrl+D still leaves the session from inside a prompt", async () => {
+	test("Ctrl+D still leaves the session from inside a field", async () => {
 		const trap = trapExit()
 		try {
 			const h = await mount()
-			h.tty.feed(ENTER) // Add model…
+			h.tty.feed(ENTER) // step 1: OpenAI-compatible
 			await flush(16)
-			h.tty.feed(ENTER) // the protocol
-			await flush(16)
-			expect(screen(h)).toContain("endpoint (default")
+			expect(screen(h)).toContain("Step 2/5")
+			// The field is seeded with the protocol's default, and Ctrl+D only
+			// leaves an empty composer — so clear it first, as a user would.
+			h.tty.feed(CTRL_U)
+			await flush(8)
 
 			h.tty.feed("\x04") // ctrl+d — leaves rather than answering
 			await flush(16)
@@ -934,11 +1235,7 @@ describe("no bypass", () => {
 
 describe("opening the gate", () => {
 	test("a failure while building the workspace view keeps the application in setup", async () => {
-		const provider = await startMockProvider(() => sse([
-			openaiChunk({ role: "assistant", content: "done" }, null),
-			openaiChunk({}, "stop"),
-			null,
-		]))
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
 		try {
 			writeModels(validConfig(`${provider.url}/v1`))
 			const h = await mount()
@@ -964,24 +1261,9 @@ describe("opening the gate", () => {
 
 			// Setup succeeds — the model is active — but the interface cannot be
 			// restored. The gate stays shut.
-			h.tty.feed(ENTER) // Add model…
-			await flush(16)
-			h.tty.feed(ENTER) // the protocol
-			await flush(16)
-			h.tty.feed(`${provider.url}/v1`)
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("probe-model")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed("sk-dummy-not-a-real-key")
-			await flush()
-			h.tty.feed(ENTER)
-			await flush(16)
-			h.tty.feed(ENTER) // commit: Add model
-			await flush(30)
+			await driveSetupToTest(h, { endpoint: `${provider.url}/v1` })
+			h.tty.feed(ENTER) // Save and Enter Workspace
+			await flush(60)
 
 			const failed = screen(h)
 			expect(failed).toContain("probe: workspace view failure")
