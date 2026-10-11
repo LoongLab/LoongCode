@@ -50,23 +50,7 @@ LoongCode는 소프트웨어 개발에 집중합니다. 범용 AI 어시스턴�
 
 ## 빠른 시작
 
-설치 방법은 두 가지이며, 어느 쪽이든 동일한 에이전트가 실행됩니다.
-
-### 독립 실행 바이너리 (Linux x86_64)
-
-[릴리스 페이지](https://github.com/oliverxu1996/LoongCode/releases)에서 `loongcode-linux-x64`를 내려받습니다:
-
-```sh
-chmod +x loongcode-linux-x64
-cd ~/my-project
-/path/to/loongcode-linux-x64
-```
-
-이 바이너리는 자체 완결형이라 Bun이나 Node를 설치할 필요가 없습니다. 현재 사전 빌드된 바이너리를 제공하는 플랫폼은 Linux x86_64뿐입니다.
-
-### npm
-
-**전제 조건:** [Bun](https://bun.sh)이 설치되어 PATH에서 사용 가능해야 합니다.
+**전제 조건:** [Node.js](https://nodejs.org) 22 이상(npm이 함께 제공됩니다). LoongCode는 플랫폼 독립적인 단일 패키지이므로, 이 설치 방법은 Windows, macOS, Linux의 x64/arm64에서 모두 동작합니다.
 
 ```sh
 npm install -g @loongcode/cli
@@ -89,7 +73,7 @@ bun install
 bun ./packages/cli/src/main.ts /path/to/your/project
 ```
 
-첫 실행 시에는 설정된 모델이 없습니다. `/model`로 설정하세요 — 프로토콜(`openai` 또는 `anthropic`), 엔드포인트, 프로바이더 모델 이름, API 키를 차례로 물어봅니다. 컨텍스트 창과 최대 출력 토큰에는 적절한 기본값이 적용되며, 필요할 때만 선택적인 "Configure limits…" 단계에서 변경할 수 있습니다. 설정은 로컬에 저장되며, 이후 `/model`이나 Ctrl+P로 모델을 전환할 수 있습니다.
+여기서 Bun은 개발용 런타임입니다(패키지 관리자, 번들러, 테스트 러너). 배포된 패키지에는 Bun이 필요하지 않습니다. 첫 실행 시에는 위와 동일한 설정 흐름이 워크스페이스를 열기 전에 실행됩니다 — 프로토콜(`openai` 또는 `anthropic`), 엔드포인트, 프로바이더 모델 이름, API 키를 차례로 물어보며, 컨텍스트 창과 최대 출력 토큰에는 적절한 기본값이 적용되고 필요할 때만 선택적인 "Configure limits…" 단계에서 변경할 수 있습니다. 설정은 로컬에 저장되며, 이후 `/model`이나 Ctrl+P로 모델을 전환할 수 있습니다.
 
 이제 작업을 입력하고 Enter를 누르면 에이전트가 움직이기 시작합니다.
 

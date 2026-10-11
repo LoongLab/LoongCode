@@ -1,6 +1,7 @@
 import { readdir } from "node:fs/promises"
 import * as path from "node:path"
 import { IGNORED_WORKSPACE_ENTRIES } from "../workspace-ignored"
+import { matchGlob } from "./glob"
 import type { Tool, ToolExecutionContext, ToolResult } from "./types"
 import { resolveToolPath } from "./types"
 
@@ -29,7 +30,6 @@ export const findTool: Tool = {
     const root = searchDir !== undefined && searchDir !== ""
       ? resolveToolPath(searchDir, ctx?.cwd)
       : ctx?.cwd ?? process.cwd()
-    const globber = new Bun.Glob(glob)
     const results: string[] = []
 
     const walk = async (dirPath: string, relBase: string): Promise<void> => {
@@ -46,7 +46,7 @@ export const findTool: Tool = {
         if (entry.isDirectory()) {
           if (IGNORED_WORKSPACE_ENTRIES.has(entry.name)) continue
           await walk(path.join(dirPath, entry.name), rel)
-        } else if (globber.match(rel)) {
+        } else if (matchGlob(glob, rel)) {
           results.push(rel)
         }
       }

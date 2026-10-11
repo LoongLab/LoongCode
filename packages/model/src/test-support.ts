@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Model, ModelConfig } from "./index"
@@ -92,32 +93,74 @@ export async function startMockProvider(
     Response | Promise<Response>,
 ): Promise<MockProvider> {
   const requests: MockProvider["requests"] = []
-  const server = Bun.serve({
-    port: 0,
-    async fetch(request) {
-      const url = new URL(request.url)
+  // node:http rather than a runtime-specific server so the mock works under
+  // both the Bun test runner and plain Node.
+  const server = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(chunk as Buffer)
+
       const headers: Record<string, string> = {}
-      request.headers.forEach((value, key) => {
-        headers[key] = value
-      })
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (typeof value === "string") headers[key] = value
+        else if (Array.isArray(value)) headers[key] = value.join(", ")
+      }
+
       let body: unknown
       try {
-        body = JSON.parse(await request.text())
+        body = JSON.parse(Buffer.concat(chunks).toString("utf-8"))
       } catch {
         body = null
       }
-      requests.push({ path: url.pathname, headers, body })
-      return handler({ path: url.pathname, headers, body })
-    },
+
+      const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname
+      requests.push({ path, headers, body })
+
+      try {
+        const response = await handler({ path, headers, body })
+        const responseHeaders: Record<string, string> = {}
+        response.headers.forEach((value, key) => {
+          responseHeaders[key] = value
+        })
+        res.writeHead(response.status, responseHeaders)
+
+        if (response.body === null) {
+          res.end()
+          return
+        }
+
+        // Stream the body through rather than buffering it: the failure and
+        // cancellation fixtures hold the connection open, and a buffered write
+        // would never reach the client.
+        const reader = response.body.getReader()
+        res.on("close", () => { void reader.cancel() })
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          res.write(Buffer.from(value))
+        }
+        if (!res.destroyed) res.end()
+      } catch (err) {
+        // A body that fails or hangs must break the connection instead of
+        // ending it cleanly, so the client sees a truncated response.
+        if (!res.destroyed) res.destroy(err instanceof Error ? err : undefined)
+      }
+    })()
   })
 
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
+  const address = server.address()
+  const port = typeof address === "object" && address !== null ? address.port : 0
+
   return {
-    url: `http://127.0.0.1:${server.port}`,
+    url: `http://127.0.0.1:${port}`,
     requests,
-    close: () => {
-      server.stop(true)
-      return Promise.resolve()
-    },
+    close: () => new Promise<void>(resolve => {
+      // Force the sockets shut, as the previous runtime's stop(true) did: the
+      // SDK keeps connections alive and a graceful close would wait them out.
+      server.closeAllConnections()
+      server.close(() => resolve())
+    }),
   }
 }
 

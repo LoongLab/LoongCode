@@ -1,4 +1,6 @@
+import { stat } from "node:fs/promises"
 import * as path from "node:path"
+import { runProcess } from "./process"
 import type { Tool, ToolExecutionContext, ToolResult } from "./types"
 import { resolveToolPath } from "./types"
 
@@ -36,14 +38,14 @@ export const grepTool: Tool = {
 
     // A file target: search within its directory but only that file.
     let fileArgs: string[] = []
-    const stat = await Bun.file(target).stat().catch(() => null)
-    if (stat && !stat.isDirectory()) {
+    const entry = await stat(target).catch(() => null)
+    if (entry && !entry.isDirectory()) {
       fileArgs = [target]
       target = path.dirname(target)
     }
 
     const args = [
-      "grep", "-rniIE",
+      "-rniIE",
       ...(include !== undefined && include !== "" ? [`--include=${include}`] : []),
       "--",
       pattern,
@@ -51,16 +53,7 @@ export const grepTool: Tool = {
       ...(fileArgs.length > 0 ? [] : [target]),
     ]
 
-    const proc = Bun.spawn(args, {
-      stdout: "pipe",
-      stderr: "pipe",
-      cwd: ctx?.cwd,
-    })
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ])
-    const exitCode = await proc.exited
+    const { stdout, stderr, exitCode } = await runProcess("grep", args, { cwd: ctx?.cwd })
 
     if (exitCode === 1) return { ok: true, data: "No matches found." }
     if (exitCode !== 0) {

@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { LoongCode } from "@loongcode/agent"
 import { LOONGCODE_VERSION } from "./version"
 import { LoongCodeTui, modelReadiness } from "./interactive/app"
@@ -167,7 +169,26 @@ export async function runCli(argv: string[], io: CliIO): Promise<number | null> 
   return null
 }
 
-if (import.meta.main) {
+/**
+ * True when this module is the process entry point.
+ *
+ * `import.meta.main` is Bun-only, so the entry check compares paths instead.
+ * Both sides are realpath-ed because Node resolves `import.meta.url` to the
+ * real file while `process.argv[1]` keeps however the entry was named — the
+ * difference matters under npm's global bin symlink, where a naive string
+ * comparison would leave the CLI refusing to start.
+ */
+function isMainModule(): boolean {
+  const entry = process.argv[1]
+  if (entry === undefined) return false
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isMainModule()) {
   runCli(process.argv.slice(2), {
     stdout: text => process.stdout.write(text),
     stderr: text => process.stderr.write(text),

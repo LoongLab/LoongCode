@@ -50,25 +50,9 @@ LoongCode is intentionally focused on software development. It is not trying to 
 
 ## Quick start
 
-Two ways to install LoongCode. Both run the same agent.
-
-### Standalone binary (Linux x86_64)
-
-Download `loongcode-linux-x64` from the
-[releases page](https://github.com/oliverxu1996/LoongCode/releases), then:
-
-```sh
-chmod +x loongcode-linux-x64
-cd ~/my-project
-/path/to/loongcode-linux-x64
-```
-
-The binary is self-contained: no Bun or Node installation is required. Linux
-x86_64 is the only platform with a prebuilt binary today.
-
-### npm
-
-**Prerequisite:** [Bun](https://bun.sh) must be installed and available on PATH.
+**Prerequisite:** [Node.js](https://nodejs.org) 22 or newer (npm ships with it).
+LoongCode is a single platform-independent package, so this one install works on
+Windows, macOS, and Linux, on both x64 and arm64.
 
 ```sh
 npm install -g @loongcode/cli
@@ -94,7 +78,12 @@ bun install
 bun ./packages/cli/src/main.ts /path/to/your/project
 ```
 
-On first launch no model is configured. Use `/model` to set one up — LoongCode asks for the protocol (`openai` or `anthropic`), the endpoint, a provider model name, and your API key. Context and output limits are given sensible defaults, with an optional *Configure limits…* step if you need to change them. The configuration is saved locally, and you can switch models later with `/model` or Ctrl+P.
+Bun is the development runtime here (package manager, bundler, test runner); the
+published package does not need it. On first launch the same setup flow as above
+runs before the workspace opens — protocol (`openai` or `anthropic`), endpoint, a
+provider model name, and your API key, with context and output limits defaulted
+and only exposed under an optional *Configure limits…* step. The configuration is
+saved locally, and you can switch models later with `/model` or Ctrl+P.
 
 Then type a task, press Enter, and watch it work.
 

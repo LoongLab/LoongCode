@@ -50,23 +50,7 @@ LoongCode 刻意专注于软件开发，它并不打算成为一个通用的 AI 
 
 ## 快速开始
 
-有两种安装方式，运行的是同一个 agent。
-
-### 独立二进制（Linux x86_64）
-
-从[发布页面](https://github.com/oliverxu1996/LoongCode/releases)下载 `loongcode-linux-x64`，然后：
-
-```sh
-chmod +x loongcode-linux-x64
-cd ~/my-project
-/path/to/loongcode-linux-x64
-```
-
-该二进制是自包含的：不需要安装 Bun 或 Node。目前只有 Linux x86_64 提供预编译二进制。
-
-### npm
-
-**前提条件：** [Bun](https://bun.sh) 必须已安装并在 PATH 中可用。
+**前提条件：** [Node.js](https://nodejs.org) 22 或更高版本（随附 npm）。LoongCode 是单一的平台无关包，这一条安装命令在 Windows、macOS、Linux 的 x64 与 arm64 上都可用。
 
 ```sh
 npm install -g @loongcode/cli
@@ -89,7 +73,7 @@ bun install
 bun ./packages/cli/src/main.ts /path/to/your/project
 ```
 
-首次启动时没有配置任何模型。使用 `/model` 完成配置——LoongCode 会依次询问协议（`openai` 或 `anthropic`）、endpoint、提供商的模型名称和你的 API key。上下文窗口和最大输出 token 会自动采用合理的默认值，仅在你需要时才通过可选的“Configure limits…”步骤调整。配置会保存在本地，之后可以随时用 `/model` 或 Ctrl+P 切换模型。
+这里 Bun 只是开发用运行时（包管理器、打包器和测试运行器），发布出去的包不需要它。首次启动时会先执行与上面相同的配置流程，然后才打开工作区——依次询问协议（`openai` 或 `anthropic`）、endpoint、提供商的模型名称和你的 API key；上下文窗口和最大输出 token 自动采用合理的默认值，仅在你需要时才通过可选的“Configure limits…”步骤调整。配置保存在本地，之后可以随时用 `/model` 或 Ctrl+P 切换模型。
 
 然后输入一个任务，按下回车，看它开始工作。
 

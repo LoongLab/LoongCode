@@ -10,6 +10,7 @@ import {
 	matchesKey,
 	type Component,
 } from "@loongcode/tui"
+import { spawnSync } from "node:child_process"
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { ModelError, testModelConnection } from "@loongcode/model"
@@ -1867,9 +1868,9 @@ export class LoongCodeTui {
 			this.compactThresholdPct = undefined
 		}
 		try {
-			const proc = Bun.spawnSync(["git", "-C", this.session.cwd, "rev-parse", "--abbrev-ref", "HEAD"])
-			if (proc.exitCode === 0) {
-				this.gitBranch = proc.stdout.toString().trim() || undefined
+			const proc = spawnSync("git", ["-C", this.session.cwd, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf-8" })
+			if (proc.status === 0 && typeof proc.stdout === "string") {
+				this.gitBranch = proc.stdout.trim() || undefined
 			}
 		} catch {
 			// Not a git repository — footer omits the branch.
