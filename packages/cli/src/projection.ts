@@ -169,6 +169,16 @@ export interface FooterInput {
    * is nothing to run with, not left to infer it from a missing field.
    */
   readonly modelMissing?: boolean
+  /**
+   * Mandatory model setup is in progress, so the workspace view is not open.
+   * Everything the workspace produces — run figures, the context reading, the
+   * compaction state, the branch, the idle/working state — is suppressed: none
+   * of it describes anything the user can act on yet, and a run summary from a
+   * previous session is exactly the workspace state setup exists to keep out.
+   * Suppression lives here, in one place, rather than in the values the caller
+   * passes, so no future field can leak by omission.
+   */
+  readonly setup?: boolean
   /** Share of the input budget at which proactive compaction begins. */
   readonly compactThresholdPct: number | undefined
   /** The most recent completed model call's usage, if any call has finished. */
@@ -349,19 +359,25 @@ function footerRow1(input: FooterInput): FooterRow {
   const cwdParts: FooterPart[] = [
     { text: shortenCwd(input.cwd), tone: "dim", drop: 3, truncatable: true },
   ]
-  if (input.branch !== undefined && input.branch.length > 0) {
+  // The branch and the idle/working state describe the workspace. While setup
+  // is in progress there is no workspace to describe, so they are absent
+  // rather than shown as idle — the path stays, because it is the one fact the
+  // user needs in order to know which repository they are setting up.
+  if (input.setup !== true && input.branch !== undefined && input.branch.length > 0) {
     cwdParts.push({ text: `(${input.branch})`, tone: "dim", drop: 0 })
   }
   groups.push({ parts: cwdParts })
 
-  // A run and a manual compaction never overlap, so the precedence below is
-  // only a tie-break: an active run wins, then a manual compaction, then idle.
-  const state = input.running ? "Working" : input.compacting === true ? "Compacting" : "Idle"
-  const stateTone: FooterTone = input.running || input.compacting === true ? "warn" : "ok"
-  groups.push({ parts: [{ text: state, tone: stateTone, drop: 0 }] })
+  if (input.setup !== true) {
+    // A run and a manual compaction never overlap, so the precedence below is
+    // only a tie-break: an active run wins, then a manual compaction, then idle.
+    const state = input.running ? "Working" : input.compacting === true ? "Compacting" : "Idle"
+    const stateTone: FooterTone = input.running || input.compacting === true ? "warn" : "ok"
+    groups.push({ parts: [{ text: state, tone: stateTone, drop: 0 }] })
 
-  if (input.running) {
-    groups.push({ parts: [{ text: "Esc to interrupt", tone: "dim", drop: 0 }] })
+    if (input.running) {
+      groups.push({ parts: [{ text: "Esc to interrupt", tone: "dim", drop: 0 }] })
+    }
   }
 
   if (input.modelId !== undefined && input.limits !== undefined) {
@@ -387,6 +403,13 @@ function footerRow1(input: FooterInput): FooterRow {
  * number stays truthful, and the percent is not shown as if it were ordinary.
  */
 function footerRow2(input: FooterInput): FooterRow {
+  if (input.setup === true) {
+    // Nothing the workspace measured is reported while it is closed. "no run
+    // yet" is deliberately NOT used here: a session that has run would make it
+    // false, and a false footer is worse than a silent one.
+    return { groups: [{ parts: [{ text: "Model setup in progress", tone: "dim", drop: 0 }] }] }
+  }
+
   // A manual compaction replaces the usage row: the context reading is stale
   // while history is being rewritten, and the user needs to see the operation
   // itself, not a number that describes the pre-compaction history.

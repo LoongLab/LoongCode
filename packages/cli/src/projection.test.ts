@@ -262,6 +262,35 @@ describe("the model's window is shown separately from the input budget", () => {
     expect(text).toBe("~/project (main) · Idle · no model")
   })
 
+  test("setup hides the branch and the workspace's state", () => {
+    // The path stays — it is the one fact setup needs. Everything else that
+    // describes the workspace is absent rather than shown as idle.
+    const text = row1Text({ setup: true })
+    expect(text).toBe("~/project · deepseek-chat · 128k window")
+    expect(text).not.toContain("main")
+    expect(text).not.toContain("Idle")
+  })
+
+  test("setup reports no run figures at all", () => {
+    // A session that has already run would make "no run yet" false, so the
+    // neutral line is used instead of a fabricated one.
+    const finishedRun: RunSummary = {
+      id: "r1", startedAt: 0, finishedAt: 303, model: MODEL, finishReason: "stop", modelCalls: 1,
+    }
+    const text = row2Text({
+      setup: true,
+      lastRun: finishedRun,
+      runRequests: 3,
+      runUsage: { inputTokens: 95_000, outputTokens: 300 },
+      compactThresholdPct: 80,
+    })
+    expect(text).toBe("Model setup in progress")
+    expect(text).not.toContain("last run")
+    expect(text).not.toContain("no run yet")
+    expect(text).not.toContain("Context")
+    expect(text).not.toContain("auto-compact")
+  })
+
   test("a resolved model is never hidden by the missing flag", () => {
     // Both come from the same reading, so they cannot disagree in practice —
     // and if a stale flag ever survived one, the fact wins.

@@ -15,13 +15,13 @@ cd my-project
 loongcode
 ```
 
-On first launch no model is active, and LoongCode says so. Type a task and it
-opens the setup flow (protocol `openai` or `anthropic`, endpoint, model name,
-API key) before running anything — or run `/model` yourself. Either way your
-task is kept in the composer until you submit it. `/model` is also how you
-choose between models you have already configured: it lists them and offers
-`Add model…` for a new one. Context and output limits are defaulted, and only
-exposed under an optional *Configure limits…* step.
+On first launch no model is active, and LoongCode says so: it opens the setup
+flow (protocol `openai` or `anthropic`, endpoint, model name, API key) before
+the workspace appears, and the normal interface is not reachable until a model
+is active. `/model` is that same flow — it lists the models you have configured
+and offers `Add model…` for a new one. Context and output limits are defaulted,
+and only exposed under an optional *Configure limits…* step. Cancelling setup
+exits; a task you had already typed is not run and is not saved.
 
 ## Scripting
 

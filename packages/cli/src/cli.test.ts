@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import cliManifest from "../package.json" with { type: "json" }
@@ -128,6 +128,33 @@ describe("CLI interactive guard", () => {
       if (previous === undefined) delete process.env.LOONGCODE_CONFIG_DIR
       else process.env.LOONGCODE_CONFIG_DIR = previous
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("print mode without a model exits nonzero, and never starts the TUI", async () => {
+    const parent = tempDir()
+    // A path that does not exist: `-p` must fail on the missing model rather
+    // than creating a configuration directory on its way out.
+    const dir = join(parent, "cfg")
+    try {
+      // The exit status comes from the entry point's rejection handler, which
+      // only runs in a real process — so this drives a real one.
+      const proc = Bun.spawn(
+        [process.execPath, join(import.meta.dir, "main.ts"), "-p", "hello"],
+        { env: { ...process.env, LOONGCODE_CONFIG_DIR: dir }, stdout: "pipe", stderr: "pipe" },
+      )
+      const code = await proc.exited
+      const stdout = await new Response(proc.stdout).text()
+      const stderr = await new Response(proc.stderr).text()
+
+      expect(code).toBe(1)
+      // Nothing painted: the interactive UI is never launched here.
+      expect(stdout).toBe("")
+      expect(stderr).toMatch(/No active model configured/)
+      expect(stderr).toContain("/model")
+      expect(existsSync(dir)).toBe(false)
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
     }
   })
 
