@@ -77,6 +77,32 @@ All notable changes to LoongCode will be documented in this file.
   capabilities now live inside the `/session` manager; they are not retained
   as aliases.
 
+## [0.1.1] - 2026-10-12
+
+Fixes Backspace in the terminal environments where the key arrives as a raw
+`0x08` byte. It was decoded as Ctrl+Backspace whenever `WT_SESSION` was set —
+an inherited environment variable, not a property of the byte stream — and no
+binding wanted that key, so the editor discarded the byte and nothing was
+deleted. A raw `0x08` now means plain Backspace everywhere; Ctrl+Backspace
+remains distinguishable wherever the terminal encodes it explicitly.
+
+### Fixed
+
+- Backspace deletes the character before the cursor when the terminal sends
+  `0x08` (Windows consoles, mintty/Git Bash, multiplexers, terminals started
+  from a Windows Terminal shell), not only when it sends `0x7F`.
+- Ctrl+Backspace is bound to delete-word-backward for terminals that encode it
+  unambiguously (Kitty CSI-u, modifyOtherKeys). It previously matched nothing
+  at all, on every terminal.
+
+### Added
+
+- Regression coverage for Backspace across terminal environments
+  (`packages/cli/src/interactive/input/backspace.test.ts`): the `0x08`/`0x7F`
+  matrix with `WT_SESSION` and the SSH variables present and absent, empty
+  input, deletion before the cursor, start-of-line merging, and both
+  Alt+Backspace encodings.
+
 ## [0.1.0] - 2026-09-27
 
 First working MiniCode coding-agent baseline: point the terminal UI at a

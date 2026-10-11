@@ -167,7 +167,7 @@ loongcode -c -p "now fix the issue you found" /path/to/project
 
 ## Status
 
-**Status: early experimental development.** LoongCode is under active development. The current version is v0.1.0 — see [CHANGELOG.md](CHANGELOG.md) for what is included.
+**Status: early experimental development.** LoongCode is under active development. The current version is v0.1.1 — see [CHANGELOG.md](CHANGELOG.md) for what is included.
 
 ## License
 
