@@ -1,6 +1,8 @@
 import type { Skill } from "../config/resources"
 import { formatSkillPrompt } from "../config/resources"
+import type { WindowsShell } from "../config/settings"
 import type { Session } from "../session/session"
+import { resolveShell, shellEnvironmentLine } from "../tools/shell"
 
 /**
  * The LoongCode Coding Agent system prompt.
@@ -35,9 +37,23 @@ When the task is complete, reply with a concise final summary: what you changed,
  *  instructions (AGENTS.md) + skills + recovery note. */
 export function buildSystemPrompt(
   session: Session,
-  opts: { projectInstructions?: string | null; skills?: Skill[] } = {},
+  opts: { projectInstructions?: string | null; skills?: Skill[]; shell?: WindowsShell } = {},
 ): string {
-  const env = `<env>\nWorking directory: ${session.cwd}\nPlatform: ${process.platform}\nToday's date: ${new Date().toDateString()}\n</env>`
+  // The shell is named only where the tool does not have an obvious one: POSIX
+  // platforms keep the prompt they have always had, byte for byte, while on
+  // Windows the model cannot guess whether its commands reach CMD or
+  // PowerShell, and the two are different languages.
+  const shellLine = process.platform === "win32"
+    ? shellEnvironmentLine(resolveShell(process.platform, opts.shell, process.env))
+    : null
+  const env = [
+    "<env>",
+    `Working directory: ${session.cwd}`,
+    `Platform: ${process.platform}`,
+    ...(shellLine === null ? [] : [shellLine]),
+    `Today's date: ${new Date().toDateString()}`,
+    "</env>",
+  ].join("\n")
   const skills = formatSkillPrompt(opts.skills ?? [])
   const note = session.takeRecoveryNote()
   return [CODING_AGENT_PROMPT, env, opts.projectInstructions ?? null, skills || null, note]

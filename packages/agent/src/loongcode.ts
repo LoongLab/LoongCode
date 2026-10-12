@@ -107,6 +107,7 @@ export class LoongCode {
       projectInstructions,
       skills: resources.skills,
       autoCompact: settings.settings.autoCompact,
+      shell: settings.settings.shell,
       onEvent: opts.onEvent,
       recorder: this.recorder,
     })

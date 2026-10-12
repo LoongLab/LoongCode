@@ -8,6 +8,7 @@ import type {
 } from "@loongcode/model"
 import { ModelError } from "@loongcode/model"
 import type { Skill } from "../config/resources"
+import type { WindowsShell } from "../config/settings"
 import { contextBudget } from "../context/budget"
 import type { PruneStats } from "../context/projection"
 import type { RewindRecorder } from "../session/checkpoint"
@@ -30,6 +31,9 @@ export interface LoopOptions {
   skills?: Skill[]
   /** Proactive compaction settings (from runtime settings). */
   autoCompact?: { enabled: boolean; thresholdPct: number }
+  /** Windows shell for the bash tool, from the user's settings. Stated in the
+   *  environment block so the model writes commands for the shell that runs. */
+  shell?: WindowsShell
   onEvent?: (event: RunEvent) => void
   /** Observability sink forwarded to request pruning. */
   onPrune?: (stats: PruneStats) => void
@@ -136,6 +140,7 @@ export class AgentLoop {
             iteration: 0,
             reissue: o?.reissue,
             signal: opts.signal,
+            shell: opts.shell,
             onEvent: emit,
           }),
       })
@@ -219,6 +224,7 @@ export class AgentLoop {
           systemPrompt = buildSystemPrompt(this.session, {
             projectInstructions: opts.projectInstructions ?? null,
             skills: opts.skills ?? [],
+            shell: opts.shell,
           })
         }
         const stream = this.model.stream({
@@ -383,6 +389,7 @@ export class AgentLoop {
         await executeTool(this.session, this.tools, assistantMsg, call.toolName, call.toolCallId, call.input as Record<string, unknown>, {
           iteration: iterations,
           signal,
+          shell: opts.shell,
           onEvent: emit,
           ...(opts.recorder === undefined ? {} : {
             onBeforeExecute: (name: string, input: Record<string, unknown>) =>

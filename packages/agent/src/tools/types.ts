@@ -5,6 +5,7 @@
  * the message to the model, which decides how to react. Tool failures never
  * terminate a run by themselves.
  */
+import type { WindowsShell } from "../config/settings"
 /**
  * Agent-local description of how to get back to output that a cap withheld.
  *
@@ -52,6 +53,9 @@ export interface ToolExecutionContext {
   /** Streaming output callback for long-running tools (e.g. bash chunks).
    *  The runtime forwards it to the UI as tool progress. */
   readonly onOutput?: (text: string) => void
+  /** Which Windows shell to run commands in, from the user's settings. Has no
+   *  effect on POSIX platforms, which always use /bin/sh. */
+  readonly shell?: WindowsShell
 }
 
 /**
