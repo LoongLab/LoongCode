@@ -11,6 +11,10 @@ in an interactive terminal UI.
 LoongCode is a single platform-independent package: the same install works on
 Windows, macOS, and Linux, on both x64 and arm64.
 
+Cross-platform compatibility improvements are implemented and automated
+verification has been performed on Linux; native Windows and macOS verification
+remains pending.
+
 ```sh
 npm install -g @loonglab/loongcode-cli
 cd my-project
@@ -43,5 +47,30 @@ templates, and skills (loaded automatically).
 Configuration and sessions live under your user config directory
 (`~/.loongcode/`) — never inside
 this package.
+
+## Windows shell
+
+On Windows, commands run in CMD (`cmd.exe`) by default. To run them in Windows
+PowerShell instead, add `shell` to `settings.json`:
+
+```json
+{
+  "shell": "powershell"
+}
+```
+
+- `"cmd"` (default) — `cmd.exe`, taken from `%ComSpec%`; `"powershell"` —
+  `powershell.exe`, started with `-NoLogo -NoProfile -NonInteractive`.
+- Global (`~/.loongcode/settings.json`) with a per-project override
+  (`.loongcode/settings.json`); the project value applies.
+- Windows only: other platforms always run commands in `/bin/sh`.
+- CMD and PowerShell are different languages — their syntax, built-ins and
+  scripts are not interchangeable, and neither has POSIX commands (`ls`, `cat`,
+  `grep`, …).
+- Nothing switches shells automatically: if the selected shell is unavailable
+  the command fails with an error naming it. `pwsh` (PowerShell 7) is not
+  selected for you.
+- Choose `powershell` for PowerShell syntax, cmdlets, or tooling that exists
+  only there.
 
 See the repository README for the full product documentation.
