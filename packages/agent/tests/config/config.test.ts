@@ -240,19 +240,22 @@ describe("the Windows shell setting", () => {
     }
   }
 
-  test("defaults to cmd: the existing Windows behaviour stays the default", () => {
+  test("defaults to PowerShell: an omitted setting selects it on Windows", () => {
     isolated(dir => {
-      expect(loadSettings(dir).settings.shell).toBe("cmd")
+      expect(loadSettings(dir).settings.shell).toBe("powershell")
     })
   })
 
-  test("powershell can be selected, and a project value overrides a global one", () => {
+  test("an explicit choice is preserved: project and global values both win over the default", () => {
     isolated(dir => {
       mkdirSync(join(dir, ".loongcode"), { recursive: true })
-      writeFileSync(projectSettingsPath(dir), JSON.stringify({ shell: "powershell" }))
-      expect(loadSettings(dir).settings.shell).toBe("powershell")
 
+      // Global says cmd, nothing project-side: cmd is what a run gets.
       writeFileSync(globalSettingsPath(), JSON.stringify({ shell: "cmd" }))
+      expect(loadSettings(dir).settings.shell).toBe("cmd")
+
+      // Project overrides global, including back to powershell.
+      writeFileSync(projectSettingsPath(dir), JSON.stringify({ shell: "powershell" }))
       expect(loadSettings(dir).settings.shell).toBe("powershell")
     })
   })

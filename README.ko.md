@@ -141,24 +141,24 @@ LoongCode는 저장소 루트의 지시 파일을 읽어 작업 시작 전에 �
 
 ## Windows 셸
 
-Windows에서 명령은 기본적으로 **CMD**(`cmd.exe`)에서 실행됩니다. 대신 Windows PowerShell에서 실행하려면 `settings.json`에 `shell`을 추가합니다.
+Windows에서 명령은 기본적으로 **Windows PowerShell**(`powershell.exe`)에서 실행됩니다. 대신 CMD에서 실행하려면 `settings.json`에 `shell`을 추가합니다.
 
 ```json
 {
-  "shell": "powershell"
+  "shell": "cmd"
 }
 ```
 
 | 값 | 사용되는 셸 |
 | --- | --- |
-| `"cmd"`(기본값) | `cmd.exe`(`%ComSpec%`에서 가져옴) |
-| `"powershell"` | `powershell.exe`(`-NoLogo -NoProfile -NonInteractive`로 시작) |
+| `"powershell"`(기본값) | `powershell.exe`(`-NoLogo -NoProfile -NonInteractive`로 시작) |
+| `"cmd"` | `cmd.exe`(`%ComSpec%`에서 가져옴) |
 
-- 이 설정은 전역(`~/.loongcode/settings.json`)이며 프로젝트별(`.loongcode/settings.json`)로 재정의할 수 있고, 프로젝트의 값이 적용됩니다.
+- 이 설정은 전역(`~/.loongcode/settings.json`)이며 프로젝트별(`.loongcode/settings.json`)로 재정의할 수 있고, 프로젝트의 값이 적용됩니다. 명시한 설정이 기본값으로 대체되는 일은 없습니다.
 - Windows에만 적용됩니다. 다른 플랫폼은 항상 `/bin/sh`로 명령을 실행합니다.
 - CMD와 PowerShell은 서로 다른 언어입니다. 구문과 내장 명령, 스크립트는 호환되지 않으며 POSIX 명령(`ls`, `cat`, `grep` 등)은 어느 쪽에도 없습니다. 에이전트는 어떤 셸이 활성화되어 있는지 전달받아 실제로 실행되는 셸에 맞춰 명령을 작성합니다.
-- 셸이 자동으로 바뀌는 일은 없습니다. 선택한 셸을 사용할 수 없으면 명령은 해당 셸 이름을 알리며 실패하고, 다른 셸로 대신 실행되지 않습니다. `pwsh`(PowerShell 7)가 자동으로 선택되지도 않습니다.
-- PowerShell 구문이나 cmdlet, PowerShell 전용 도구가 필요하면 `powershell`을 선택하고, 그렇지 않으면 기본값인 `cmd`(Windows 기본 셸)를 그대로 사용합니다.
+- 셸이 자동으로 바뀌는 일은 없습니다. 선택한 셸을 사용할 수 없으면 명령은 해당 셸 이름을 알리며 실패하고, 다른 셸로 대신 실행되지 않습니다(기본값인 PowerShell도 마찬가지입니다). `pwsh`(PowerShell 7)가 자동으로 선택되지도 않습니다.
+- CMD 구문이나 배치 내장 명령, `%ComSpec%`을 기대하는 도구가 필요하면 `cmd`를 선택하고, 그렇지 않으면 기본값인 PowerShell(구문과 cmdlet)을 사용합니다.
 
 ## 스크립트와 자동화
 

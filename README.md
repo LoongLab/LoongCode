@@ -156,24 +156,24 @@ You can also add project-local **prompt templates** (`.loongcode/prompts/*.md`) 
 
 ## Windows shell
 
-On Windows, commands run in **CMD** (`cmd.exe`) by default. To run them in Windows PowerShell instead, add `shell` to `settings.json`:
+On Windows, commands run in **Windows PowerShell** (`powershell.exe`) by default. To run them in CMD instead, add `shell` to `settings.json`:
 
 ```json
 {
-  "shell": "powershell"
+  "shell": "cmd"
 }
 ```
 
 | Value | Shell |
 | --- | --- |
-| `"cmd"` (default) | `cmd.exe`, taken from `%ComSpec%` |
-| `"powershell"` | `powershell.exe`, started with `-NoLogo -NoProfile -NonInteractive` |
+| `"powershell"` (default) | `powershell.exe`, started with `-NoLogo -NoProfile -NonInteractive` |
+| `"cmd"` | `cmd.exe`, taken from `%ComSpec%` |
 
-- The setting is global (`~/.loongcode/settings.json`) and can be overridden per project (`.loongcode/settings.json`); the project value applies.
+- The setting is global (`~/.loongcode/settings.json`) and can be overridden per project (`.loongcode/settings.json`); the project value applies, so an explicit choice is never replaced by the default.
 - It affects Windows only. Other platforms always run commands in `/bin/sh`.
 - CMD and PowerShell are different languages: their syntax, built-ins, and scripts are not interchangeable, and POSIX commands (`ls`, `cat`, `grep`, …) exist in neither. The agent is told which shell is active, so it writes commands for the one that runs.
-- Nothing switches shells automatically. If the selected shell is unavailable, the command fails with an error naming it rather than running somewhere else. `pwsh` (PowerShell 7) is not selected automatically either.
-- Choose `powershell` when you want PowerShell syntax, cmdlets, or tooling that exists only there; keep the default `cmd` to use the shell Windows provides.
+- Nothing switches shells automatically. If the selected shell is unavailable, the command fails with an error naming it rather than running somewhere else — including when PowerShell is the default. `pwsh` (PowerShell 7) is not selected automatically either.
+- Choose `cmd` when you want CMD syntax, batch built-ins, or tooling that expects `%ComSpec%`; keep the default to use PowerShell syntax and cmdlets.
 
 ## Scripting and automation
 

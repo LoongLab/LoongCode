@@ -37,29 +37,33 @@ describe("resolveShell", () => {
     expect(resolveShell("darwin", "cmd", {}).command).toBe("/bin/sh")
   })
 
-  test("Windows defaults to CMD from %ComSpec%", () => {
+  test("Windows defaults to PowerShell, from an omitted setting", () => {
     const spec = resolveShell("win32", undefined, ENV_WITH_COMSPEC)
+    expect(spec.kind).toBe("powershell")
+    expect(spec.command).toBe("powershell.exe")
+    expect(spec.args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+  })
+
+  test("Windows PowerShell can also be selected explicitly, with the same result", () => {
+    expect(resolveShell("win32", "powershell", ENV_WITH_COMSPEC))
+      .toEqual(resolveShell("win32", undefined, ENV_WITH_COMSPEC))
+  })
+
+  test("an explicit CMD selection still runs CMD, from %ComSpec%", () => {
+    const spec = resolveShell("win32", "cmd", ENV_WITH_COMSPEC)
     expect(spec.kind).toBe("cmd")
     expect(spec.command).toBe("C:\\Windows\\System32\\cmd.exe")
     expect(spec.args).toEqual(["/d", "/s", "/c"])
     expect(spec.label).toContain("CMD")
   })
 
-  test("Windows without %ComSpec% still names cmd.exe", () => {
-    expect(resolveShell("win32", undefined, {}).command).toBe("cmd.exe")
+  test("CMD without %ComSpec% still names cmd.exe", () => {
+    expect(resolveShell("win32", "cmd", {}).command).toBe("cmd.exe")
   })
 
-  test("Windows PowerShell is selected explicitly, and says so", () => {
-    const spec = resolveShell("win32", "powershell", ENV_WITH_COMSPEC)
-    expect(spec.kind).toBe("powershell")
-    expect(spec.command).toBe("powershell.exe")
-    expect(spec.args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-    expect(spec.label).toContain("PowerShell")
-  })
-
-  test("the default is CMD, stated as a constant", () => {
-    expect(DEFAULT_WINDOWS_SHELL).toBe("cmd")
-    expect(resolveShell("win32", DEFAULT_WINDOWS_SHELL, ENV_WITH_COMSPEC).kind).toBe("cmd")
+  test("the default is PowerShell, stated as a constant", () => {
+    expect(DEFAULT_WINDOWS_SHELL).toBe("powershell")
+    expect(resolveShell("win32", DEFAULT_WINDOWS_SHELL, ENV_WITH_COMSPEC).kind).toBe("powershell")
   })
 })
 
@@ -108,6 +112,29 @@ describe("what the agent is told", () => {
     )
     expect(prompt).not.toContain("Shell:")
   })
+
+  test("the environment block names the shell the run will actually use", () => {
+    if (process.platform === "win32") return // simulated Windows, not a Windows run
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true })
+    try {
+      const session = Session.create({ cwd: "C:\\workspace" })
+
+      // Omitted: the default, and the prompt has to say so rather than leaving
+      // the model to guess between two languages.
+      const byDefault = buildSystemPrompt(session)
+      expect(byDefault).toContain("Shell: powershell.exe (Windows PowerShell)")
+      expect(byDefault).toContain("PowerShell syntax")
+
+      // Explicit CMD: the prompt follows the selection, not the default.
+      const withCmd = buildSystemPrompt(session, { shell: "cmd" })
+      expect(withCmd).toContain("(CMD)")
+      expect(withCmd).toContain("CMD syntax")
+      expect(withCmd).not.toContain("PowerShell syntax")
+    } finally {
+      if (platform !== undefined) Object.defineProperty(process, "platform", platform)
+    }
+  })
 })
 
 describe("the simulated Windows path in the bash tool", () => {
@@ -125,16 +152,23 @@ describe("the simulated Windows path in the bash tool", () => {
       // The failure must name the shell that was selected — never fall back to
       // /bin/sh and succeed, which would run the command in a language the
       // environment block says is not in use.
-      const selected = await bashTool.execute({ command: "dir" }, { shell: "powershell" })
-      expect(selected.ok).toBe(false)
-      if (!selected.ok) {
-        expect(selected.error).toContain("powershell.exe")
-        expect(selected.error).toContain("no other shell is tried automatically")
-      }
-
       const byDefault = await bashTool.execute({ command: "dir" }, {})
       expect(byDefault.ok).toBe(false)
-      if (!byDefault.ok) expect(byDefault.error).toContain("cmd.exe")
+      if (!byDefault.ok) {
+        expect(byDefault.error).toContain("powershell.exe")
+        expect(byDefault.error).toContain("no other shell is tried automatically")
+        // The remedy points at the other supported shell, and never claims one
+        // was tried.
+        expect(byDefault.error).toContain('Set "shell" to "cmd"')
+      }
+
+      // An explicit CMD selection is a different shell, and fails as itself.
+      const explicitCmd = await bashTool.execute({ command: "dir" }, { shell: "cmd" })
+      expect(explicitCmd.ok).toBe(false)
+      if (!explicitCmd.ok) {
+        expect(explicitCmd.error).toContain("cmd.exe")
+        expect(explicitCmd.error).not.toContain("powershell.exe")
+      }
     } finally {
       if (platform !== undefined) Object.defineProperty(process, "platform", platform)
       if (path === undefined) delete process.env.PATH

@@ -21,6 +21,19 @@ All notable changes to LoongCode will be documented in this file.
 
 ### Changed
 
+- **Windows PowerShell is the default shell on Windows.** Commands run in
+  `powershell.exe` (`-NoLogo -NoProfile -NonInteractive -Command`) unless
+  `settings.shell` says otherwise; CMD is selected explicitly with
+  `"shell": "cmd"`, and %ComSpec% is used for it as before. The change affects
+  Windows only — POSIX platforms still run commands in `/bin/sh`, and their
+  prompts and tool descriptions are unchanged. An explicit `shell` value in
+  global or project settings is honored exactly as before, so an installation
+  that already chose CMD keeps CMD; an installation that never set the key now
+  gets PowerShell. Nothing switches shells at runtime: if the selected shell is
+  unavailable, the command fails with an error naming it rather than running
+  somewhere else, and PowerShell 7 (`pwsh`) is still not selected
+  automatically. The system prompt and the tool description state whichever
+  shell is active.
 - **The product is now LoongCode.** The rename is complete across the CLI,
   its runtime, its configuration and its documentation. Command, package,
   binary and configuration names are all `loongcode`: the CLI is published as
