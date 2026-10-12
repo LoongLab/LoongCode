@@ -49,6 +49,15 @@ export interface RunProcessOptions {
   readonly onOutput?: (chunk: string) => void
 }
 
+/** How long a cancelled run may take to settle before the call stops waiting.
+ *  Completion is a guarantee; termination is not, and the two are reported
+ *  separately: when this elapses, the result says termination was attempted
+ *  and could not be confirmed. */
+const TERMINATION_GRACE_MS = 2000
+
+/** What cancellation was able to do, recorded rather than assumed. */
+type TerminationAttempt = "none" | "tree" | "direct"
+
 export function runProcess(
   command: string,
   args: readonly string[],
@@ -66,45 +75,76 @@ export function runProcess(
     })
 
     let settled = false
+    let terminationAttempt: TerminationAttempt = "none"
+    let terminationTimer: NodeJS.Timeout | null = null
+
+    const stdoutChunks = captureStream(child.stdout, options.onOutput)
+    const stderrChunks = captureStream(child.stderr, options.onOutput)
+
+    const finalResult = (exitCode: number, terminationNote?: string): ProcessResult => {
+      const stdout = decodeCaptured(stdoutChunks)
+      const stderr = decodeCaptured(stderrChunks)
+      const notes = [stdout.note, stderr.note].filter((note): note is string => note !== null)
+      const decodeNote = notes.length === 0 ? undefined : [...new Set(notes)].join("; ")
+      return {
+        stdout: stdout.text,
+        stderr: stderr.text,
+        exitCode,
+        ...(decodeNote === undefined ? {} : { decodeNote }),
+        ...(terminationNote === undefined ? {} : { terminationNote }),
+      }
+    }
+
     const settle = (finish: () => void): void => {
       if (settled) return
       settled = true
       options.signal?.removeEventListener("abort", onAbort)
+      if (terminationTimer !== null) clearTimeout(terminationTimer)
       finish()
     }
 
     function onAbort(): void {
-      terminate(child)
+      terminationAttempt = terminate(child)
+      if (settled) return
+      // Started only once a termination has been attempted, so a normal run
+      // never carries a pending timer.
+      terminationTimer = setTimeout(onTerminationDeadline, TERMINATION_GRACE_MS)
+      // The child's own handle keeps the run alive until it exits; the timer
+      // must not be a second reason for the process to stay open.
+      terminationTimer.unref?.()
+    }
+
+    /**
+     * The process had not exited within the grace period after cancellation.
+     * Completion is enforced here — the pipes are closed so this call cannot
+     * wait any longer — while termination is reported as what it is: attempted
+     * and unconfirmed. Destroying the pipes is not evidence of anything about
+     * the process; it only ends our interest in its output.
+     */
+    function onTerminationDeadline(): void {
+      if (settled) return
+      escalateTermination(child, terminationAttempt)
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      // Nothing is waiting on the child any more; do not let a process we could
+      // not kill hold the whole CLI open.
+      child.unref()
+      const note = `termination was attempted (${
+        terminationAttempt === "tree" ? "process tree" : "direct child"
+      }) but the process had not exited within ${TERMINATION_GRACE_MS}ms; it may still be running, and this output may be incomplete`
+      settle(() => resolve(finalResult(SIGNAL_TERM_EXIT_CODE, note)))
     }
 
     // A signal that fired before the spawn finished still has to kill it.
-    if (options.signal?.aborted === true) terminate(child)
+    if (options.signal?.aborted === true) onAbort()
     else options.signal?.addEventListener("abort", onAbort, { once: true })
 
     child.on("error", (err: NodeJS.ErrnoException) => {
       settle(() => reject(spawnFailure(command, err)))
     })
 
-    // Output is captured as BYTES and decoded when the stream ends, so the
-    // encoding decision sees the complete stream instead of guessing from its
-    // first non-ASCII bytes (see tools/encoding.ts). The live preview decodes
-    // incrementally as UTF-8, which is what the tools emit; on Windows a
-    // command writing the console code page may preview imperfectly until the
-    // command finishes, and the final text carries a note when that happened.
-    const stdoutChunks = captureStream(child.stdout, options.onOutput)
-    const stderrChunks = captureStream(child.stderr, options.onOutput)
-
     child.on("close", (code, signal) => {
-      const stdout = decodeCaptured(stdoutChunks)
-      const stderr = decodeCaptured(stderrChunks)
-      const notes = [stdout.note, stderr.note].filter((note): note is string => note !== null)
-      const decodeNote = notes.length === 0 ? undefined : [...new Set(notes)].join("; ")
-      settle(() => resolve({
-        stdout: stdout.text,
-        stderr: stderr.text,
-        exitCode: code ?? signalExitCode(signal),
-        ...(decodeNote === undefined ? {} : { decodeNote }),
-      }))
+      settle(() => resolve(finalResult(code ?? signalExitCode(signal))))
     })
   })
 }
@@ -137,23 +177,66 @@ function signalExitCode(signal: NodeJS.Signals | null): number {
   return 128 + (constants.signals[signal] ?? 0)
 }
 
-/** Ends the child and everything the child started. */
-function terminate(child: ChildProcess): void {
-  if (child.pid === undefined || child.exitCode !== null) return
+const SIGNAL_TERM_EXIT_CODE = 128 + (constants.signals.SIGTERM ?? 15)
+
+/**
+ * Ends the child and everything the child started, and reports what it was
+ * able to attempt. Nothing here can prove the tree is gone: `taskkill` exiting
+ * non-zero, `kill` returning false, or the child already having exited are all
+ * just observations, which is why confirmation is a separate question with its
+ * own deadline and its own note.
+ */
+function terminate(child: ChildProcess): TerminationAttempt {
+  if (child.pid === undefined || child.exitCode !== null) return "none"
+
   if (process.platform === "win32") {
+    // taskkill reaches descendants (/t) and cannot be ignored (/f). Both
+    // handler paths fall back to the direct child, and both are attached to
+    // the killer process — the previous version attached the error handler to
+    // a stream it had dropped, so neither could ever run and a missing
+    // taskkill left the child alive and the call waiting forever.
+    let killer: ChildProcess
     try {
-      spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore" }).on("error", () => {})
+      killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      })
     } catch {
-      // taskkill unavailable — fall back to ending the direct child only.
       child.kill()
+      return "direct"
     }
-    return
+    killer.on("error", () => child.kill())
+    killer.on("close", code => {
+      if (code !== 0) child.kill()
+    })
+    killer.unref()
+    return "tree"
   }
+
   try {
     // Negative pid signals the child's process group, taking its children too.
     process.kill(-child.pid, "SIGTERM")
+    return "tree"
   } catch {
     child.kill("SIGTERM")
+    return "direct"
+  }
+}
+
+/** The last resort when the grace period expires: an escalation that cannot be
+ *  ignored, still best-effort, still unconfirmed. */
+function escalateTermination(child: ChildProcess, attempt: TerminationAttempt): void {
+  if (attempt === "none" || child.exitCode !== null) return
+  if (process.platform === "win32") {
+    // TerminateProcess has no graceful variant, and taskkill has already been
+    // tried: the direct child is all that is left.
+    child.kill()
+    return
+  }
+  try {
+    process.kill(-child.pid!, "SIGKILL")
+  } catch {
+    child.kill("SIGKILL")
   }
 }
 

@@ -89,17 +89,17 @@ export const bashTool: Tool = {
     if (timeoutController.signal.aborted) {
       return {
         ok: false,
-        error: `Command timed out after ${formatDuration(effectiveTimeout)}.\nPartial output:\n${combine(result.stdout, result.stderr)}${decodeNoteLine(result)}`,
+        error: `Command timed out after ${formatDuration(effectiveTimeout)}.\nPartial output:\n${combine(result.stdout, result.stderr)}${resultNotes(result)}`,
       }
     }
 
     // A non-zero exit is `ok: true` — exit codes are data, not tool errors.
     // The text stays byte-identical; `failureEvidence` only records that the
     // command *observed* a failure, so request-time pruning keeps it.
-    // The decode note (Windows only, and only when output was not UTF-8) rides
-    // in front of the exit code so a guessed decoding is never silently
+    // Notes ride in front of the exit code: a guessed decoding, or a
+    // cancellation whose cleanup could not be confirmed, is never silently
     // presented as fact.
-    const data = `${combine(result.stdout, result.stderr)}${decodeNoteLine(result)}\n(exit code: ${result.exitCode})`
+    const data = `${combine(result.stdout, result.stderr)}${resultNotes(result)}\n(exit code: ${result.exitCode})`
     return result.exitCode === 0
       ? { ok: true, data }
       : { ok: true, data, failureEvidence: true }
@@ -132,9 +132,13 @@ function combine(stdout: string, stderr: string): string {
   return stderr ? `${stdout}\n(stderr)\n${stderr}` : stdout
 }
 
-/** The decoding was a disclosed fallback (never set on POSIX). */
-function decodeNoteLine(result: ProcessResult): string {
-  return result.decodeNote === undefined ? "" : `\n(note: ${result.decodeNote})`
+/** Both caveats a result can carry: a disclosed decoding fallback (Windows)
+ *  and a cancellation whose cleanup could not be confirmed. Neither is set on
+ *  an ordinary POSIX command, so its text is unchanged. */
+function resultNotes(result: ProcessResult): string {
+  const decode = result.decodeNote === undefined ? "" : `\n(note: ${result.decodeNote})`
+  const termination = result.terminationNote === undefined ? "" : `\n(warning: ${result.terminationNote})`
+  return decode + termination
 }
 
 function formatDuration(ms: number): string {
