@@ -19,7 +19,7 @@
     },
     "packages/cli": {
       "name": "@loonglab/loongcode-cli",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "bin": {
         "loongcode": "dist/loongcode.js",
       },
