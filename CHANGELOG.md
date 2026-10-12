@@ -18,22 +18,53 @@ All notable changes to LoongCode will be documented in this file.
   brings it back. It scales to the terminal (5-row wordmark, then 3-row, then a
   single-line fallback) and never blocks the composer, which stays focused and
   usable immediately.
+- **Windows shell selection.** `settings.shell` chooses which shell commands
+  run in on Windows: `"powershell"` (Windows PowerShell, the default) or
+  `"cmd"` (CMD, taken from `%ComSpec%`). It is global with a per-project
+  override, and an explicit choice is never replaced by the default. It applies
+  to Windows only — other platforms always run commands in `/bin/sh`, with the
+  prompts and tool descriptions they have always had. Nothing switches shells
+  automatically: if the selected shell cannot start, the command fails with an
+  error naming it instead of running somewhere else, and PowerShell 7 (`pwsh`)
+  is never chosen for you. CMD and PowerShell are different languages, so the
+  system prompt and the tool description state which one is active.
+
+  Platform verification to date is Linux: the automated suite runs there, the
+  Windows paths are exercised by simulated tests, and native Windows and macOS
+  runs remain outstanding.
 
 ### Changed
 
-- **Windows PowerShell is the default shell on Windows.** Commands run in
-  `powershell.exe` (`-NoLogo -NoProfile -NonInteractive -Command`) unless
-  `settings.shell` says otherwise; CMD is selected explicitly with
-  `"shell": "cmd"`, and %ComSpec% is used for it as before. The change affects
-  Windows only — POSIX platforms still run commands in `/bin/sh`, and their
-  prompts and tool descriptions are unchanged. An explicit `shell` value in
-  global or project settings is honored exactly as before, so an installation
-  that already chose CMD keeps CMD; an installation that never set the key now
-  gets PowerShell. Nothing switches shells at runtime: if the selected shell is
-  unavailable, the command fails with an error naming it rather than running
-  somewhere else, and PowerShell 7 (`pwsh`) is still not selected
-  automatically. The system prompt and the tool description state whichever
-  shell is active.
+- **Windows PowerShell is the default shell on Windows.** An installation that
+  never set `settings.shell` now runs commands in `powershell.exe` instead of
+  CMD; one that already chose `"cmd"` — globally or per project — keeps CMD.
+  The change is Windows only.
+- **File search no longer needs an external `grep` binary.** The `grep` tool
+  searches in-process, so it works where no `grep` exists — on Windows it
+  previously failed with "Executable not found in $PATH", which the agent read
+  as "no results". The interface, the output format (matching lines with
+  `file:line` prefixes, the 100-match cap, `No matches found.`) and the search
+  scope (`.git` and `node_modules` are still searched) are unchanged. Regular
+  expressions are JavaScript's rather than POSIX ERE: `\d`, lookahead and
+  non-greedy quantifiers now work, while `[[:alpha:]]`, `\<` and `\>` are
+  rejected with an error naming the replacement instead of silently matching
+  something else. This is not full GNU grep compatibility — the dialect, the
+  `include` glob (now the same dialect as `find`, where `{a,b}` alternates) and
+  the handling of unreadable paths all differ as described here.
+- **A search that cannot read part of the tree says so, and still returns what
+  it found.** Previously a single unreadable path failed the whole search and
+  discarded the matches; the result now carries them with a "(Search
+  incomplete: …)" note. Special files such as FIFOs and devices are skipped
+  rather than read, which removes a way for a search to block indefinitely.
+- **Subprocess output is decoded as UTF-8 unless the whole stream proves
+  otherwise.** On Windows, output that is not valid UTF-8 — `cmd.exe`
+  built-ins and many native tools write the console code page — is decoded
+  with the console code page and the result says which one was used, instead
+  of arriving as mojibake. That fallback is a labelled best guess, not
+  detection of what a program intended: the console code page describes the
+  console, not the program, and a stream can be valid UTF-8 while having been
+  written in another encoding. When no code page can be determined, the output
+  says that instead of pretending. POSIX decoding is unchanged.
 - **The product is now LoongCode.** The rename is complete across the CLI,
   its runtime, its configuration and its documentation. Command, package,
   binary and configuration names are all `loongcode`: the CLI is published as
@@ -89,6 +120,20 @@ All notable changes to LoongCode will be documented in this file.
 - Slash commands `/resume`, `/name`, `/tree`, `/fork`, and `/clone`. Their
   capabilities now live inside the `/session` manager; they are not retained
   as aliases.
+
+### Fixed
+
+- **Cancelling a command always returns.** Aborting a run (Esc) settles the
+  tool call within a bounded grace period even when the command refuses to
+  die; previously a Windows cancellation whose `taskkill` was missing or failed
+  could leave the call waiting forever, with no error and no diagnostic.
+  Termination is still best-effort — a process or descendant that escapes the
+  process tree can survive — and the result says explicitly when cleanup could
+  not be confirmed, rather than implying the tree is gone.
+- **`@file` references now work with spaces and Windows paths.** `@"my
+  notes.md"` and `@C:\src\a.ts` (either slash) expand to the file's content
+  like any other reference; they used to be left as literal text. Unresolved
+  references still stay literal, so `@` in ordinary prose is never mangled.
 
 ## [0.1.1] - 2026-10-12
 
