@@ -54,6 +54,10 @@ LoongCode is intentionally focused on software development. It is not trying to 
 LoongCode is a single platform-independent package, so this one install works on
 Windows, macOS, and Linux, on both x64 and arm64.
 
+Cross-platform compatibility improvements are implemented and automated
+verification has been performed on Linux; native Windows and macOS verification
+remains pending.
+
 ```sh
 npm install -g @loonglab/loongcode-cli
 cd ~/my-project
@@ -149,6 +153,27 @@ LoongCode reads instruction files from your repository root to understand your p
 The first file found is loaded into the agent's system prompt, so the agent follows your project's rules from the first message.
 
 You can also add project-local **prompt templates** (`.loongcode/prompts/*.md`) and **skills** (`.loongcode/skills/<name>/SKILL.md`). These load automatically. Global settings live in `~/.loongcode/settings.json` and can be overridden per project in `.loongcode/settings.json`.
+
+## Windows shell
+
+On Windows, commands run in **CMD** (`cmd.exe`) by default. To run them in Windows PowerShell instead, add `shell` to `settings.json`:
+
+```json
+{
+  "shell": "powershell"
+}
+```
+
+| Value | Shell |
+| --- | --- |
+| `"cmd"` (default) | `cmd.exe`, taken from `%ComSpec%` |
+| `"powershell"` | `powershell.exe`, started with `-NoLogo -NoProfile -NonInteractive` |
+
+- The setting is global (`~/.loongcode/settings.json`) and can be overridden per project (`.loongcode/settings.json`); the project value applies.
+- It affects Windows only. Other platforms always run commands in `/bin/sh`.
+- CMD and PowerShell are different languages: their syntax, built-ins, and scripts are not interchangeable, and POSIX commands (`ls`, `cat`, `grep`, …) exist in neither. The agent is told which shell is active, so it writes commands for the one that runs.
+- Nothing switches shells automatically. If the selected shell is unavailable, the command fails with an error naming it rather than running somewhere else. `pwsh` (PowerShell 7) is not selected automatically either.
+- Choose `powershell` when you want PowerShell syntax, cmdlets, or tooling that exists only there; keep the default `cmd` to use the shell Windows provides.
 
 ## Scripting and automation
 

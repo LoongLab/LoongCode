@@ -52,6 +52,8 @@ LoongCode 刻意专注于软件开发，它并不打算成为一个通用的 AI 
 
 **前提条件：** [Node.js](https://nodejs.org) 22 或更高版本（随附 npm）。LoongCode 是单一的平台无关包，这一条安装命令在 Windows、macOS、Linux 的 x64 与 arm64 上都可用。
 
+跨平台兼容性改进已经实现，自动化验证已在 Linux 上完成；原生 Windows 与 macOS 的验证尚未进行。
+
 ```sh
 npm install -g @loonglab/loongcode-cli
 cd ~/my-project
@@ -136,6 +138,27 @@ LoongCode 会读取仓库根目录下的指令文件，在开始工作之前了�
 找到的第一个文件会被加载进智能体的系统提示词，因此从第一条消息开始，智能体就会遵循你项目的规则。
 
 你还可以添加项目本地的**提示词模板**（`.loongcode/prompts/*.md`）和**技能**（`.loongcode/skills/<name>/SKILL.md`）。这些内容会自动加载。全局配置位于 `~/.loongcode/settings.json`，并可在项目的 `.loongcode/settings.json` 中覆盖。
+
+## Windows shell
+
+在 Windows 上，命令默认在 **CMD**（`cmd.exe`）中运行。若要改用 Windows PowerShell，在 `settings.json` 中加入 `shell`：
+
+```json
+{
+  "shell": "powershell"
+}
+```
+
+| 取值 | 使用的 shell |
+| --- | --- |
+| `"cmd"`（默认） | `cmd.exe`，取自 `%ComSpec%` |
+| `"powershell"` | `powershell.exe`，以 `-NoLogo -NoProfile -NonInteractive` 启动 |
+
+- 该设置是全局的（`~/.loongcode/settings.json`），可在项目内（`.loongcode/settings.json`）覆盖，项目中的值优先生效。
+- 它只影响 Windows。其他平台始终使用 `/bin/sh` 运行命令。
+- CMD 与 PowerShell 是两种不同的语言：语法、内置命令和脚本互不通用，两者也都没有 POSIX 命令（`ls`、`cat`、`grep` 等）。智能体会被告知当前生效的是哪个 shell，因此会按实际运行的那个来编写命令。
+- 不会自动切换 shell。所选 shell 不可用时，命令会失败并指出是哪一个，而不会改用其他 shell 执行；也不会自动选用 `pwsh`（PowerShell 7）。
+- 需要 PowerShell 语法、cmdlet 或仅 PowerShell 才有的工具时，选择 `powershell`；其余情况保持默认的 `cmd`，即使用 Windows 自带的 shell。
 
 ## 脚本与自动化
 

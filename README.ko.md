@@ -52,6 +52,8 @@ LoongCode는 소프트웨어 개발에 집중합니다. 범용 AI 어시스턴�
 
 **전제 조건:** [Node.js](https://nodejs.org) 22 이상(npm이 함께 제공됩니다). LoongCode는 플랫폼 독립적인 단일 패키지이므로, 이 설치 방법은 Windows, macOS, Linux의 x64/arm64에서 모두 동작합니다.
 
+크로스 플랫폼 호환성 개선 사항은 구현되었고 자동화 검증은 Linux에서 수행되었습니다. 네이티브 Windows 및 macOS 검증은 아직 남아 있습니다.
+
 ```sh
 npm install -g @loonglab/loongcode-cli
 cd ~/my-project
@@ -136,6 +138,27 @@ LoongCode는 저장소 루트의 지시 파일을 읽어 작업 시작 전에 �
 가장 먼저 발견된 파일이 에이전트의 시스템 프롬프트에 로드되므로, 첫 메시지부터 프로젝트의 규칙을 따릅니다.
 
 프로젝트 로컬 **프롬프트 템플릿**(`.loongcode/prompts/*.md`)과 **스킬**(`.loongcode/skills/<name>/SKILL.md`)을 추가할 수도 있습니다. 이들은 자동으로 로드됩니다. 전역 설정은 `~/.loongcode/settings.json`에 있으며 프로젝트의 `.loongcode/settings.json`으로 재정의할 수 있습니다.
+
+## Windows 셸
+
+Windows에서 명령은 기본적으로 **CMD**(`cmd.exe`)에서 실행됩니다. 대신 Windows PowerShell에서 실행하려면 `settings.json`에 `shell`을 추가합니다.
+
+```json
+{
+  "shell": "powershell"
+}
+```
+
+| 값 | 사용되는 셸 |
+| --- | --- |
+| `"cmd"`(기본값) | `cmd.exe`(`%ComSpec%`에서 가져옴) |
+| `"powershell"` | `powershell.exe`(`-NoLogo -NoProfile -NonInteractive`로 시작) |
+
+- 이 설정은 전역(`~/.loongcode/settings.json`)이며 프로젝트별(`.loongcode/settings.json`)로 재정의할 수 있고, 프로젝트의 값이 적용됩니다.
+- Windows에만 적용됩니다. 다른 플랫폼은 항상 `/bin/sh`로 명령을 실행합니다.
+- CMD와 PowerShell은 서로 다른 언어입니다. 구문과 내장 명령, 스크립트는 호환되지 않으며 POSIX 명령(`ls`, `cat`, `grep` 등)은 어느 쪽에도 없습니다. 에이전트는 어떤 셸이 활성화되어 있는지 전달받아 실제로 실행되는 셸에 맞춰 명령을 작성합니다.
+- 셸이 자동으로 바뀌는 일은 없습니다. 선택한 셸을 사용할 수 없으면 명령은 해당 셸 이름을 알리며 실패하고, 다른 셸로 대신 실행되지 않습니다. `pwsh`(PowerShell 7)가 자동으로 선택되지도 않습니다.
+- PowerShell 구문이나 cmdlet, PowerShell 전용 도구가 필요하면 `powershell`을 선택하고, 그렇지 않으면 기본값인 `cmd`(Windows 기본 셸)를 그대로 사용합니다.
 
 ## 스크립트와 자동화
 

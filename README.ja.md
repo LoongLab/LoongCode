@@ -52,6 +52,8 @@ LoongCode はソフトウェア開発に集中的に取り組むためのツー�
 
 **前提条件:** [Node.js](https://nodejs.org) 22 以降（npm が同梱されています）。LoongCode は単一のプラットフォーム非依存パッケージなので、このインストール手順は Windows・macOS・Linux の x64 / arm64 でそのまま動作します。
 
+クロスプラットフォーム互換性の改善は実装済みで、自動検証は Linux で実施済みです。ネイティブの Windows および macOS での検証は未実施です。
+
 ```sh
 npm install -g @loonglab/loongcode-cli
 cd ~/my-project
@@ -136,6 +138,27 @@ LoongCode は、リポジトリのルートにある指示ファイルを読み�
 最初に見つかったファイルがエージェントのシステムプロンプトに読み込まれるため、最初のメッセージからプロジェクトのルールに従って動作します。
 
 さらに、プロジェクトローカルの**プロンプトテンプレート**（`.loongcode/prompts/*.md`）と**スキル**（`.loongcode/skills/<name>/SKILL.md`）を追加できます。これらは自動的に読み込まれます。グローバル設定は `~/.loongcode/settings.json` にあり、プロジェクトの `.loongcode/settings.json` で上書きできます。
+
+## Windows シェル
+
+Windows では、コマンドは既定で **CMD**（`cmd.exe`）で実行されます。代わりに Windows PowerShell で実行するには、`settings.json` に `shell` を追加します。
+
+```json
+{
+  "shell": "powershell"
+}
+```
+
+| 値 | 使用されるシェル |
+| --- | --- |
+| `"cmd"`（既定） | `cmd.exe`（`%ComSpec%` から取得） |
+| `"powershell"` | `powershell.exe`（`-NoLogo -NoProfile -NonInteractive` 付きで起動） |
+
+- この設定はグローバル（`~/.loongcode/settings.json`）で、プロジェクト単位（`.loongcode/settings.json`）で上書きでき、プロジェクトの値が優先されます。
+- 影響するのは Windows のみです。他のプラットフォームは常に `/bin/sh` でコマンドを実行します。
+- CMD と PowerShell は別の言語です。構文・組み込みコマンド・スクリプトに互換性はなく、POSIX のコマンド（`ls`、`cat`、`grep` など）はどちらにも存在しません。エージェントには有効なシェルが伝えられるため、実際に実行されるシェルに合わせてコマンドを書きます。
+- シェルが自動で切り替わることはありません。選択したシェルが利用できない場合、コマンドはそのシェル名を示して失敗し、別のシェルでは実行されません。`pwsh`（PowerShell 7）が自動で選ばれることもありません。
+- PowerShell の構文・コマンドレット・PowerShell 専用のツールを使いたい場合は `powershell` を、それ以外は既定の `cmd`（Windows 標準のシェル）を選びます。
 
 ## スクリプトと自動化
 
