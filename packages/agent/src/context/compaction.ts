@@ -1,7 +1,7 @@
 import type { Model, ModelMessage, ModelUsage } from "@loongcode/model"
 import { contextBudget, estimateTokens } from "./budget"
 import type { Session } from "../session/session"
-import type { SessionMessage } from "../session/types"
+import type { CompactionSkipReason, SessionMessage } from "../session/types"
 
 const PRESERVE_MIN_TOKENS = 2000
 const PRESERVE_MAX_TOKENS = 8000
@@ -37,7 +37,9 @@ export type CompactionOutcome =
     }
   | {
       readonly status: "no-progress"
-      readonly reason: "no-compactable-region" | "empty-tail" | "empty-summary"
+      /** Shared with the run record and the event stream, so a reason this
+       *  layer can produce is a reason every consumer already handles. */
+      readonly reason: CompactionSkipReason
     }
   | { readonly status: "failed"; readonly error: string }
 

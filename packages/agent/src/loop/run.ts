@@ -2,6 +2,9 @@ import type { Model, ModelUsage } from "@loongcode/model"
 import type { PruneStats } from "../context/projection"
 import type { Session } from "../session/session"
 import type {
+  CompactionSkip,
+  CompactionSkipReason,
+  CompactionTrigger,
   ModelIdentity,
   RunFinishReason,
   SessionMessage,
@@ -80,6 +83,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   let toolCalls = 0
   let usage: ModelUsage = {}
   let pruning: PruneStats | undefined
+  let projectionRecoveries: PruneStats | undefined
+  let compactionSkips: CompactionSkip[] | undefined
 
   const emit = (event: RunEvent): void => {
     if (event.type === "model_response") {
@@ -91,6 +96,15 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // A compaction's summarization call never emits `model_response`, so its
       // cost reaches the run total here and nowhere else — counted exactly once.
       usage = sumUsage(usage, event.usage)
+    } else if (event.type === "projection_reduced") {
+      // The pass also reached `recordPrune`, so it is already part of `pruning`.
+      // Keeping the recovery total apart is what separates a run that shed
+      // context to survive from one that was merely trimmed.
+      projectionRecoveries = addStats(projectionRecoveries, event)
+    } else if (event.type === "compaction_skipped") {
+      // Aggregated rather than appended per attempt: the record reports which
+      // reasons recurred, not how many events were emitted.
+      compactionSkips = recordSkip(compactionSkips, event.reason, event.trigger)
     }
     callerOnEvent?.(event)
   }
@@ -98,10 +112,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   // Pruning reports through a callback rather than an event, so the run totals
   // are accumulated here and land on the record.
   const recordPrune = (stats: PruneStats): void => {
-    pruning = {
-      reduced: (pruning?.reduced ?? 0) + stats.reduced,
-      originalBytes: (pruning?.originalBytes ?? 0) + stats.originalBytes,
-    }
+    pruning = addStats(pruning, stats)
   }
 
   // `beginRun` already persisted 'running' and the partial record BEFORE
@@ -147,6 +158,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     modelCalls,
     toolCalls,
     ...(pruning === undefined ? {} : { pruning }),
+    ...(projectionRecoveries === undefined ? {} : { projectionRecoveries }),
+    ...(compactionSkips === undefined ? {} : { compactionSkips }),
     ...(result.error === undefined ? {} : { error: result.error }),
   })
   emit({
@@ -171,6 +184,25 @@ function modelIdentity(model: Model): ModelIdentity {
     contextWindow: model.limits.contextWindow,
     maxOutputTokens: model.limits.maxOutputTokens,
   }
+}
+
+/** Adds one pass's totals into a run total of the same shape. */
+function addStats(total: PruneStats | undefined, stats: PruneStats): PruneStats {
+  return {
+    reduced: (total?.reduced ?? 0) + stats.reduced,
+    originalBytes: (total?.originalBytes ?? 0) + stats.originalBytes,
+  }
+}
+
+/** Folds one skip into the run's list, counting repeats of the same pair. */
+function recordSkip(
+  skips: readonly CompactionSkip[] | undefined,
+  reason: CompactionSkipReason,
+  trigger: CompactionTrigger,
+): CompactionSkip[] {
+  const existing = skips?.find(skip => skip.reason === reason && skip.trigger === trigger)
+  if (existing === undefined) return [...(skips ?? []), { reason, trigger, count: 1 }]
+  return (skips ?? []).map(skip => (skip === existing ? { ...skip, count: skip.count + 1 } : skip))
 }
 
 /** Every token field of `ModelUsage`, so a field added later is summed too. */

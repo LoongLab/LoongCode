@@ -77,6 +77,35 @@ All notable changes to LoongCode will be documented in this file.
   capabilities now live inside the `/session` manager; they are not retained
   as aliases.
 
+### Fixed
+
+- A run no longer ends when its context overflows and compaction cannot help. In
+  a single-task run the compactable region is the task itself — everything the
+  run produced sits after the last user message — so compaction reported
+  `no-progress / empty-tail` and the run stopped with `context overflow detected
+  but compaction made no progress: empty-tail`. The request projection is now
+  reduced instead: tool output the model can get back is withheld from the
+  request — output a cap spilled to a file (`spillPath`), a `read` that names
+  the file it read (`sourcePath`), or a capped read that states where to resume
+  (`resumeOffset`) — while the two most recent recoverable results, failed
+  executions, and observed-failure evidence are kept, and each withheld result
+  states what it held and where to find it again. Only the request is reduced:
+  durable history is untouched, so a withheld result can simply be read again
+  when it is needed, and a reference that no longer resolves fails as a normal
+  read error rather than returning invented content. Recovery is bounded like
+  compaction retries (five per run), never sends a reduced request identical to
+  one a provider has already rejected, and ends the run naming the failed stage
+  and carrying the provider's own diagnostic when nothing recoverable remains.
+- Compaction that cannot progress is no longer silent. The proactive check used
+  to discard a `no-progress` outcome entirely, so the only trace of it was the
+  failure it eventually caused; every attempt now emits a `compaction_skipped`
+  event naming the reason (`empty-tail`, `no-compactable-region`,
+  `empty-summary`) and the trigger (`proactive`, `reactive`, `provider`), a
+  recovery emits `projection_reduced`, and the run record carries
+  `compactionSkips` and `projectionRecoveries` so a finished run still explains
+  itself. `/compact` reports which reason applied instead of a bare "nothing to
+  compact".
+
 ## [0.1.2] - 2026-10-12
 
 A cross-platform compatibility release. Windows gets a real choice of shell —

@@ -9,10 +9,11 @@ import type {
 import { ModelError } from "@loongcode/model"
 import type { Skill } from "../config/resources"
 import type { WindowsShell } from "../config/settings"
-import { contextBudget } from "../context/budget"
+import { contextBudget, estimateTokens } from "../context/budget"
 import type { PruneStats } from "../context/projection"
 import type { RewindRecorder } from "../session/checkpoint"
 import type { Session } from "../session/session"
+import type { CompactionSkipReason, CompactionTrigger } from "../session/types"
 import type { RunEvent } from "./events"
 import { toModelTools, type Tool } from "../tools"
 import { Compactor } from "../context/compaction"
@@ -46,6 +47,13 @@ const DEFAULT_MAX_ITERATIONS = 100
 const DOOM_LOOP_THRESHOLD = 3
 /** Compaction retries per run on provider-reported context overflow. */
 const MAX_COMPACTION_RETRIES = 5
+/**
+ * Forced projection reductions per run, bounded exactly like compaction
+ * retries and for the same reason: each one withholds tool output the model
+ * can recover, so a run that keeps needing them should stop rather than keep
+ * shedding context.
+ */
+const MAX_PROJECTION_RECOVERIES = MAX_COMPACTION_RETRIES
 /** Delayed retries of a rate-limited model call (auto-retry). */
 const MAX_AUTO_RETRIES = 3
 const AUTO_RETRY_DELAY_MS = 2000
@@ -58,6 +66,17 @@ function compactionEvent(outcome: { removed: number; usage?: ModelUsage }): RunE
     summarizedMessages: outcome.removed,
     ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
   }
+}
+
+/** The `compaction_skipped` event for a compaction that could not progress.
+ *  Emitted for every trigger, so none of them can discard the outcome in
+ *  silence. */
+function compactionSkippedEvent(
+  iteration: number,
+  reason: CompactionSkipReason,
+  trigger: CompactionTrigger,
+): RunEvent {
+  return { type: "compaction_skipped", iteration, reason, trigger }
 }
 
 /** Resolves after `ms`, or early with `true` when the signal aborts. */
@@ -90,7 +109,9 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<boolean> {
  * - max iterations → 'max-iterations'
  * - 3 identical consecutive tool calls → 'doom-loop'
  * - abort signal wins everywhere → 'aborted'
- * - model errors end the run; context_exceeded compacts once and retries
+ * - model errors end the run; context_exceeded compacts and retries, and an
+ *   overflow compaction cannot resolve falls back to withholding recoverable
+ *   tool output from the request projection
  * - tool failures never terminate the run — the model sees them as results
  *
  * The model is the `@loongcode/model` boundary: no provider or SDK type
@@ -174,7 +195,21 @@ export class AgentLoop {
     // diverge from it (it did, whenever a compaction call went uncounted).
     let lastInputTokens = 0
     let compactionRetries = 0
+    let projectionRecoveries = 0
     let retryAttempt = 0
+    /**
+     * Set when an overflow left compaction with nothing to summarize: the next
+     * request is built by the forced recovery pass instead. Cleared when that
+     * request is built, whatever the outcome, so a recovery is never applied
+     * twice to the same overflow.
+     */
+    let pendingRecovery: { reason: CompactionSkipReason; trigger: CompactionTrigger; diagnostic: string } | null = null
+    /**
+     * The last request a recovery pass produced and sent. A provider rejection
+     * leaves the durable history untouched, so the next pass would rebuild this
+     * exact request — and sending it again cannot change the answer.
+     */
+    let lastRecoveredRequest: string | null = null
     const autoCompact = opts.autoCompact ?? { enabled: true, thresholdPct: 80 }
     const recentCalls: string[] = []
 
@@ -190,7 +225,11 @@ export class AgentLoop {
       // Proactive compaction: the last call's input usage crossing the
       // configured share of the input budget means the next request may
       // not fit — compact now rather than failing mid-flight.
-      if (autoCompact.enabled) {
+      //
+      // While a recovery is pending, compaction is deliberately not retried:
+      // it was just shown to make no progress on this very history, and the
+      // projection pass is the instrument that can still help.
+      if (autoCompact.enabled && pendingRecovery === null) {
         const threshold = Math.floor(budget.inputBudget * (autoCompact.thresholdPct / 100))
         if (lastInputTokens >= threshold && lastInputTokens > 0) {
           const outcome = await compactNow()
@@ -198,6 +237,12 @@ export class AgentLoop {
           // because the reactive and provider paths still guard the request.
           if (outcome.status === "compacted") {
             emit(compactionEvent(outcome))
+          } else if (outcome.status === "no-progress") {
+            // Not fatal, but never silent: "the history cannot shrink" is the
+            // fact that decides what happens when the budget runs out, and
+            // discarding it here is what made the original failure
+            // undiagnosable.
+            emit(compactionSkippedEvent(iterations, outcome.reason, "proactive"))
           }
         }
       }
@@ -227,21 +272,83 @@ export class AgentLoop {
             shell: opts.shell,
           })
         }
+        // The projection is built before the call rather than inside it: a
+        // recovery pass has to be inspected before it is sent, because a pass
+        // that withheld nothing would re-send the request the provider just
+        // rejected.
+        const reductions: PruneStats[] = []
+        const recovery = pendingRecovery
+        const projected = this.session.toRequestMessages({
+          lastInputTokens,
+          inputBudget: budget.inputBudget,
+          // Forwarded only when a sink exists, so a run without one builds
+          // exactly the context it built before.
+          ...(opts.onPrune === undefined && recovery === null
+            ? {}
+            : {
+                onPrune: (stats: PruneStats) => {
+                  reductions.push(stats)
+                  opts.onPrune?.(stats)
+                },
+              }),
+          ...(recovery === null ? {} : { forced: true }),
+        })
+        if (recovery !== null) {
+          pendingRecovery = null
+          const withheld = reductions[0]
+          if (withheld === undefined || withheld.reduced === 0) {
+            return {
+              aborted: false,
+              finishReason: "error",
+              iterations,
+              error:
+                `context overflow recovery failed: compaction made no progress (${recovery.reason}) ` +
+                `and no recoverable tool output remained to withhold (${recovery.diagnostic})`,
+            }
+          }
+          // The reduction must be shown to fit before it is sent: this estimate
+          // is what called the rejected request fitting, so sending another
+          // request it calls fitting would repeat the failure being recovered
+          // from.
+          const estimated = estimateTokens(projected)
+          if (estimated > budget.inputBudget) {
+            return {
+              aborted: false,
+              finishReason: "error",
+              iterations,
+              error:
+                `context overflow recovery failed: ${withheld.reduced} tool result(s) withheld but the request ` +
+                `still exceeds the input budget (${estimated} > ${budget.inputBudget} estimated tokens) (${recovery.diagnostic})`,
+            }
+          }
+          // A rejected request changes no durable history, so a second recovery
+          // over the same history rebuilds the request that was just rejected.
+          // Sending it again is the one thing recovery must never do.
+          const signature = JSON.stringify(projected)
+          if (signature === lastRecoveredRequest) {
+            return {
+              aborted: false,
+              finishReason: "error",
+              iterations,
+              error:
+                `context overflow recovery failed: withholding ${withheld.reduced} tool result(s) produced the ` +
+                `request the provider already rejected (${recovery.diagnostic})`,
+            }
+          }
+          lastRecoveredRequest = signature
+          emit({
+            type: "projection_reduced",
+            iteration: iterations,
+            reduced: withheld.reduced,
+            originalBytes: withheld.originalBytes,
+          })
+        }
         const stream = this.model.stream({
           // System-level instructions lead the conversation. The provider
           // adapter turns this into each protocol's native mechanism (a
           // top-level `system` parameter on Anthropic, a leading system
           // message on OpenAI). The session's durable history never holds it.
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...this.session.toRequestMessages({
-              lastInputTokens,
-              inputBudget: budget.inputBudget,
-              // Forwarded only when a sink exists, so a run without one builds
-              // exactly the context it built before.
-              ...(opts.onPrune === undefined ? {} : { onPrune: opts.onPrune }),
-            }),
-          ],
+          messages: [{ role: "system", content: systemPrompt }, ...projected],
           tools: toModelTools(this.tools),
           // Per-request output ceiling from the locked 75/25 budget.
           maxOutputTokens: budget.outputBudget,
@@ -299,6 +406,15 @@ export class AgentLoop {
               iterations -= 1 // the retried attempt replaces this one
               continue
             }
+            // The durable history cannot shrink. The request projection can:
+            // withhold tool output the model can recover and send what remains.
+            if (outcome.status === "no-progress" && projectionRecoveries < MAX_PROJECTION_RECOVERIES) {
+              emit(compactionSkippedEvent(iterations, outcome.reason, "provider"))
+              projectionRecoveries += 1
+              pendingRecovery = { reason: outcome.reason, trigger: "provider", diagnostic: err.message }
+              iterations -= 1 // the retried attempt replaces this one
+              continue
+            }
             return {
               aborted: false,
               finishReason: "error",
@@ -306,7 +422,8 @@ export class AgentLoop {
               error:
                 outcome.status === "failed"
                   ? `context overflow: compaction failed (${outcome.error})`
-                  : `context overflow: compaction made no progress (${outcome.reason})`,
+                  : `context overflow: compaction made no progress (${outcome.reason}), and the run's ` +
+                    `${MAX_PROJECTION_RECOVERIES} projection recoveries are spent (${err.message})`,
             }
           }
           // Auto-retry: transient provider throttling gets a
@@ -408,20 +525,36 @@ export class AgentLoop {
       }
 
       // Reactive overflow: the input budget is spent — compact before the
-      // next request. If compaction is impossible, stop deterministically.
+      // next request. If the history cannot shrink, the request projection
+      // still can: withhold tool output the model can recover and carry on,
+      // rather than ending the run on a compaction that was never able to help
+      // (in a single-turn run the compactable region holds only the task).
       if (compactor.isOverflow(response.usage)) {
         const outcome = await compactNow()
         if (outcome.status === "compacted") {
           emit(compactionEvent(outcome))
+        } else if (outcome.status === "no-progress") {
+          emit(compactionSkippedEvent(iterations, outcome.reason, "reactive"))
+          const diagnostic = `provider counted ${response.usage?.inputTokens ?? "an unknown number of"} input tokens against a ${budget.inputBudget} budget`
+          if (projectionRecoveries >= MAX_PROJECTION_RECOVERIES) {
+            return {
+              aborted: false,
+              finishReason: "error",
+              iterations,
+              error:
+                `context overflow detected but compaction made no progress (${outcome.reason}), and the run's ` +
+                `${MAX_PROJECTION_RECOVERIES} projection recoveries are spent (${diagnostic})`,
+            }
+          }
+          projectionRecoveries += 1
+          pendingRecovery = { reason: outcome.reason, trigger: "reactive", diagnostic }
+          continue
         } else {
           return {
             aborted: false,
             finishReason: "error",
             iterations,
-            error:
-              outcome.status === "failed"
-                ? `context overflow detected but compaction failed: ${outcome.error}`
-                : `context overflow detected but compaction made no progress: ${outcome.reason}`,
+            error: `context overflow detected but compaction failed: ${outcome.error}`,
           }
         }
       }

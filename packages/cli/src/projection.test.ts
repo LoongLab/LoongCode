@@ -12,6 +12,8 @@ import {
   footerRowText,
   footerRows,
   formatTokens,
+  compactionSkippedNoticeText,
+  projectionReducedNoticeText,
   reduceRunDisplay,
   resultLine,
   runStateLine,
@@ -592,6 +594,38 @@ describe("pruning appears only when something was withheld", () => {
   test("one withheld result reads in the singular", () => {
     expect(runSummaryLines({ ...record, pruning: { reduced: 1, originalBytes: 40 } }).join(" "))
       .toContain("pruned 1 tool result (40B)")
+  })
+})
+
+describe("a run that recovered from an overflow explains itself", () => {
+  const record: RunSummary = { id: "r1", startedAt: 1, model: MODEL }
+
+  test("a run whose compaction could not progress names the reason and the trigger", () => {
+    const text = runSummaryLines({
+      ...record,
+      compactionSkips: [{ reason: "empty-tail", trigger: "reactive", count: 2 }],
+    }).join(" ")
+    expect(text).toContain("compaction made no progress: empty-tail ×2 (reactive)")
+  })
+
+  test("a run that survived by withholding context says so", () => {
+    const text = runSummaryLines({ ...record, projectionRecoveries: { reduced: 3, originalBytes: 12_288 } }).join(" ")
+    expect(text).toContain("recovered from overflow by withholding 3 tool results (12.0KB)")
+  })
+
+  test("a run with neither record says neither thing", () => {
+    const text = runSummaryLines(record).join(" ")
+    expect(text).not.toContain("compaction made no progress")
+    expect(text).not.toContain("recovered from overflow")
+  })
+
+  test("the live notices state the same facts", () => {
+    expect(compactionSkippedNoticeText("empty-tail", "reactive")).toBe(
+      "context compaction skipped — everything outside the live turn is the recent tail (reported after the response)",
+    )
+    expect(projectionReducedNoticeText(2, 4096)).toBe(
+      "context overflow — withheld 2 tool results (4.0KB) to fit the request",
+    )
   })
 })
 

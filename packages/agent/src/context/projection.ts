@@ -55,6 +55,19 @@ export interface PruneContext {
    * A throwing sink is ignored: reporting must not change what pruning does.
    */
   readonly onPrune?: (stats: PruneStats) => void
+  /**
+   * Forced recovery, used only after a provider reported that a request did
+   * not fit while this module's estimate said it did.
+   *
+   * The pressure-driven pass stops as soon as the estimate fits, and its stage
+   * one protects the whole current user turn. Both assumptions are gone here:
+   * the estimate has just been contradicted by the provider, and in a
+   * single-turn run the current turn holds nearly everything. So a forced pass
+   * withholds every eligible result older than the newest
+   * {@link RETAINED_RECOVERABLE_RESULTS}, wherever it sits, and does not stop
+   * at an estimate it cannot trust.
+   */
+  readonly forced?: boolean
 }
 
 /**
@@ -85,6 +98,15 @@ export interface PrunedToolOutput {
    */
   readonly spillPath?: string
   readonly resumeOffset?: number
+  /**
+   * Path a re-readable result was read from, so a withheld result states where
+   * its content still is.
+   *
+   * Read off the `read` call that produced the result, which request reduction
+   * never rewrites — the path is therefore as durable as the call itself, and
+   * absent when that call is not in the projection being reduced.
+   */
+  readonly sourcePath?: string
   /** Present when part of the content was retained rather than withheld. */
   readonly excerpt?: string
 }
@@ -96,6 +118,76 @@ export function isPrunedToolOutput(
   if (output.type !== "json") return false
   const value = output.value
   return typeof value === "object" && value !== null && (value as Record<string, unknown>)[PRUNED_KEY] === true
+}
+
+/** Where a withheld result's content can be found again. */
+interface RecoveryRoute {
+  /** File the capping layer externalized the full output to. */
+  readonly spillPath?: string
+  /** Offset a capped read continues from. */
+  readonly resumeOffset?: number
+  /** Path a re-readable result was read from. */
+  readonly sourcePath?: string
+}
+
+/** The route a result's own declared affordances state, if any. */
+function declaredRoute(affordances: ToolAffordances | undefined): RecoveryRoute | undefined {
+  if (affordances === undefined) return undefined
+  if (affordances.externalizedAt === undefined && affordances.resumeOffset === undefined) return undefined
+  return {
+    ...(affordances.externalizedAt === undefined ? {} : { spillPath: affordances.externalizedAt }),
+    ...(affordances.resumeOffset === undefined ? {} : { resumeOffset: affordances.resumeOffset }),
+  }
+}
+
+/** The identity of one tool call, as the assistant message that issued it
+ *  states it. Deliberately not read from the result: a result does not carry
+ *  its call's input, and a made-up path would be worse than none. */
+interface ToolCallIdentity {
+  readonly toolName: string
+  readonly input: unknown
+}
+
+/** Every tool call the messages being projected still carry, by call id. */
+function toolCallsIn(messages: readonly ProjectionMessage[]): Map<string, ToolCallIdentity> {
+  const calls = new Map<string, ToolCallIdentity>()
+  for (const message of messages) {
+    if (message.role !== "assistant") continue
+    for (const part of message.content) {
+      if (part.type !== "tool_call") continue
+      calls.set(part.toolCallId, { toolName: part.toolName, input: part.input })
+    }
+  }
+  return calls
+}
+
+/** The path a `read` call names, when it names one. */
+function readPathOf(call: ToolCallIdentity | undefined): string | undefined {
+  if (call?.toolName !== "read") return undefined
+  const input = call.input as { filePath?: unknown } | null | undefined
+  const filePath = input?.filePath
+  return typeof filePath === "string" && filePath.length > 0 ? filePath : undefined
+}
+
+/**
+ * How to get back to a result this pass withholds, or `undefined` when nothing
+ * states a way.
+ *
+ * The forced pass withholds only results with a route, so it can never take
+ * away content the model has no path back to. Nothing here reads prose: a
+ * capping layer declares `externalizedAt`, and a `read` states its path in its
+ * own call, which is never rewritten.
+ */
+function recoveryRouteFor(
+  affordances: ToolAffordances | undefined,
+  call: ToolCallIdentity | undefined,
+): RecoveryRoute | undefined {
+  const declared = declaredRoute(affordances) ?? {}
+  const sourcePath = readPathOf(call)
+  const route: RecoveryRoute = { ...declared, ...(sourcePath === undefined ? {} : { sourcePath }) }
+  return route.spillPath === undefined && route.resumeOffset === undefined && route.sourcePath === undefined
+    ? undefined
+    : route
 }
 
 /**
@@ -110,7 +202,7 @@ export function isPrunedToolOutput(
  */
 function markerFor(
   result: ModelToolResult,
-  affordances: ToolAffordances | undefined,
+  route: RecoveryRoute | undefined,
   excerpt: string | undefined,
   originalBytes: number,
 ): ModelToolResult {
@@ -123,8 +215,9 @@ function markerFor(
         reason: "request-over-budget",
         toolName: result.toolName,
         originalBytes,
-        ...(affordances?.externalizedAt === undefined ? {} : { spillPath: affordances.externalizedAt }),
-        ...(affordances?.resumeOffset === undefined ? {} : { resumeOffset: affordances.resumeOffset }),
+        ...(route?.spillPath === undefined ? {} : { spillPath: route.spillPath }),
+        ...(route?.resumeOffset === undefined ? {} : { resumeOffset: route.resumeOffset }),
+        ...(route?.sourcePath === undefined ? {} : { sourcePath: route.sourcePath }),
         ...(excerpt === undefined ? {} : { excerpt }),
       },
     },
@@ -159,6 +252,67 @@ function toModelMessages(messages: readonly ProjectionMessage[]): ModelMessage[]
 }
 
 /**
+ * Eligible results a forced pass always retains: the newest this many are the
+ * ones the current decision most likely rests on.
+ */
+const RETAINED_RECOVERABLE_RESULTS = 2
+
+/**
+ * Withhold every eligible result older than the newest
+ * {@link RETAINED_RECOVERABLE_RESULTS} — the forced recovery pass.
+ *
+ * Eligibility is deliberately narrower than {@link isReducible}: a result is
+ * withheld only when something states how to get back to it, so this pass can
+ * never take away content the model has no route to. Everything
+ * {@link isReducible} protects stays protected as well — failure evidence,
+ * tool errors, and markers already in the projection.
+ *
+ * Deterministic and single-pass: it visits the projection once and never
+ * consults the estimate, because the estimate is the thing that just failed.
+ */
+function withholdRecoverableResults(
+  projection: ProjectionMessage[],
+  calls: ReadonlyMap<string, ToolCallIdentity>,
+  recordReduction: (bytes: number) => void,
+): void {
+  // Collect first, apply second: eligibility is decided from the untouched
+  // projection, so the outcome cannot depend on the order results are visited.
+  const eligible: Array<{ message: number; result: number; bytes: number; route: RecoveryRoute }> = []
+  for (let i = 0; i < projection.length; i++) {
+    const message = projection[i]
+    if (message.role !== "tool") continue
+    const content = message.content
+    for (let r = 0; r < content.length; r++) {
+      const result = content[r]
+      if (!isReducible(message, result)) continue
+      const route = recoveryRouteFor(message.affordances?.[result.toolCallId], calls.get(result.toolCallId))
+      if (route === undefined) continue
+      eligible.push({ message: i, result: r, bytes: Buffer.byteLength(textOf(result), "utf-8"), route })
+    }
+  }
+
+  const retained = new Set(
+    eligible
+      .slice(Math.max(0, eligible.length - RETAINED_RECOVERABLE_RESULTS))
+      .map(entry => `${entry.message}:${entry.result}`),
+  )
+  for (const entry of eligible) {
+    if (retained.has(`${entry.message}:${entry.result}`)) continue
+    // Re-read from the projection: the message this entry names may already
+    // carry a sibling this pass replaced, and rebuilding from a stale array
+    // would silently discard that reduction.
+    const current = projection[entry.message].content as readonly ModelToolResult[]
+    projection[entry.message] = {
+      ...projection[entry.message],
+      content: current.map((candidate, ri) =>
+        ri === entry.result ? markerFor(current[ri], entry.route, undefined, entry.bytes) : candidate,
+      ),
+    } as ProjectionMessage
+    recordReduction(entry.bytes)
+  }
+}
+
+/**
  * Request-time context safety.
  *
  * Responsibilities (mechanism 2) — reduce an over-budget *request projection*
@@ -180,6 +334,13 @@ function toModelMessages(messages: readonly ProjectionMessage[]): ModelMessage[]
  *
  * Terminates when the projection fits or no reducible content remains.
  *
+ * Recovery (`PruneContext.forced`) is the exception to the trigger rule above:
+ * it runs after a provider has rejected a request this estimate called fitting,
+ * so the estimate cannot gate it and the current turn's protection cannot
+ * apply. It withholds everything eligible and recoverable in one pass and
+ * reports what it withheld — the caller decides whether the result is fit to
+ * send, because only the caller knows the request that was rejected.
+ *
  * Omitting `context` means no budget is known, so no pressure can be shown and
  * the projection is returned unchanged.
  */
@@ -191,8 +352,9 @@ export function pruneOldToolOutputs(
   if (context === undefined) return messages.map(({ role, content }) => ({ role, content }) as ModelMessage)
 
   const projection: ProjectionMessage[] = messages.map(message => ({ ...message }))
+  const forced = context.forced === true
   const safety = Math.max(context.lastInputTokens ?? 0, estimateTokens(toModelMessages(projection)))
-  if (safety <= context.inputBudget) return toModelMessages(projection)
+  if (!forced && safety <= context.inputBudget) return toModelMessages(projection)
 
   const fits = (): boolean => estimateTokens(toModelMessages(projection)) <= context.inputBudget
   const lastUserIndex = lastUserIndexOf(projection)
@@ -207,39 +369,51 @@ export function pruneOldToolOutputs(
     originalBytes += bytes
   }
 
-  // Stage 1 — withhold the oldest reducible results. Everything in the current
-  // user turn is protected, as are failure-evidence turns and tool errors.
-  for (let i = 0; i < projection.length && !fits(); i++) {
-    if (i >= lastUserIndex && lastUserIndex !== -1) break
-    const message = projection[i]
-    if (message.role !== "tool") continue
-    const count = (message.content as readonly ModelToolResult[]).length
-    for (let r = 0; r < count; r++) {
-      if (fits()) break
-      // Re-read from the projection: an earlier iteration of this inner loop
-      // may already have replaced a sibling result, and rebuilding from a
-      // stale array would silently discard that reduction.
-      const current = projection[i].content as readonly ModelToolResult[]
-      const result = current[r]
-      if (!isReducible(projection[i], result)) continue
-      const text = textOf(result)
-      const bytes = Buffer.byteLength(text, "utf-8")
-      // This result's own recovery, not its siblings' — see `ToolMessage.affordances`.
-      const affordances = projection[i].affordances?.[result.toolCallId]
-      projection[i] = {
-        ...projection[i],
-        content: current.map((candidate, ri) =>
-          ri === r ? markerFor(result, affordances, undefined, bytes) : candidate,
-        ),
-      } as ProjectionMessage
-      recordReduction(bytes)
+  if (forced) {
+    // Recovery withholds everything recoverable at once, wherever it sits —
+    // including the current turn, which stage one protects and which in a
+    // single-turn run holds the whole context.
+    withholdRecoverableResults(projection, toolCallsIn(projection), recordReduction)
+  } else {
+    // Stage 1 — withhold the oldest reducible results. Everything in the current
+    // user turn is protected, as are failure-evidence turns and tool errors.
+    for (let i = 0; i < projection.length && !fits(); i++) {
+      if (i >= lastUserIndex && lastUserIndex !== -1) break
+      const message = projection[i]
+      if (message.role !== "tool") continue
+      const count = message.content.length
+      for (let r = 0; r < count; r++) {
+        if (fits()) break
+        // Re-read from the projection: an earlier iteration of this inner loop
+        // may already have replaced a sibling result, and rebuilding from a
+        // stale array would silently discard that reduction.
+        const current = projection[i].content as readonly ModelToolResult[]
+        const result = current[r]
+        if (!isReducible(projection[i], result)) continue
+        const text = textOf(result)
+        const bytes = Buffer.byteLength(text, "utf-8")
+        // This result's own recovery, not its siblings' — see `ToolMessage.affordances`.
+        const route = declaredRoute(projection[i].affordances?.[result.toolCallId])
+        projection[i] = {
+          ...projection[i],
+          content: current.map((candidate, ri) => (ri === r ? markerFor(result, route, undefined, bytes) : candidate)),
+        } as ProjectionMessage
+        recordReduction(bytes)
+      }
     }
   }
 
   // Stage 2 — the newest result alone still does not fit. Keep it represented
   // but shrink it, retaining an excerpt and any recovery affordance instead of
   // withholding it entirely.
-  if (!fits()) {
+  //
+  // Never in recovery mode: the forced pass has already withheld every
+  // recoverable result it may, and shrinking the newest one would trade the
+  // evidence the current step most likely needs for a request the caller is
+  // about to be told does not fit. Every tool but `read` caps its own output
+  // far below any real budget, and `read` caps at 50KB, so a single newest
+  // result is never what makes a request overflow.
+  if (!forced && !fits()) {
     for (let i = projection.length - 1; i >= 0; i--) {
       const message = projection[i]
       if (message.role !== "tool") continue
@@ -261,7 +435,7 @@ export function pruneOldToolOutputs(
             ...projection[i],
             content: content.map((candidate, ri) =>
               ri === r
-                ? markerFor(result, projection[i].affordances?.[result.toolCallId], excerpt, bytes)
+                ? markerFor(result, declaredRoute(projection[i].affordances?.[result.toolCallId]), excerpt, bytes)
                 : candidate),
           } as ProjectionMessage
           if (!recorded) {
