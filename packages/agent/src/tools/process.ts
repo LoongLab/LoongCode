@@ -129,9 +129,13 @@ export function runProcess(
       // Nothing is waiting on the child any more; do not let a process we could
       // not kill hold the whole CLI open.
       child.unref()
-      const note = `termination was attempted (${
-        terminationAttempt === "tree" ? "process tree" : "direct child"
-      }) but the process had not exited within ${TERMINATION_GRACE_MS}ms; it may still be running, and this output may be incomplete`
+      const note = terminationAttempt === "none"
+        // Nothing was there to terminate: the command had exited, and what kept
+        // this call waiting was output still held open by something it started.
+        ? "the command had already exited but its output was still held open; a process it started may still be running, and this output may be incomplete"
+        : `termination was attempted (${
+          terminationAttempt === "tree" ? "process tree" : "direct child"
+        }) but the process had not exited within ${TERMINATION_GRACE_MS}ms; it may still be running, and this output may be incomplete`
       settle(() => resolve(finalResult(SIGNAL_TERM_EXIT_CODE, note)))
     }
 

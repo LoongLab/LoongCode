@@ -337,6 +337,26 @@ describe("errors", () => {
     cleanup()
   })
 
+  if (unixOnly) {
+    test("an inaccessible search path is not reported as a missing one", async () => {
+      const { dir, cleanup } = workspace()
+      mkdirSync(join(dir, "locked/child"), { recursive: true })
+      chmodSync(join(dir, "locked"), 0o000)
+      try {
+        const result = await search("needle", { path: "locked/child" }, dir)
+        expect(result.ok).toBe(false)
+        if (!result.ok) {
+          // Saying "does not exist" would send the model hunting for a typo.
+          expect(result.error).toContain("Cannot read search path")
+          expect(result.error).not.toContain("does not exist")
+        }
+      } finally {
+        chmodSync(join(dir, "locked"), 0o755)
+        cleanup()
+      }
+    })
+  }
+
   test("an invalid regular expression is reported, not thrown", async () => {
     const { dir, cleanup } = workspace()
     const result = await search("(unclosed", {}, dir)

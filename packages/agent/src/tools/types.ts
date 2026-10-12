@@ -1,12 +1,12 @@
+import type { WindowsShell } from "../config/settings"
+
 /**
  * Result of a single tool execution.
  *
  * Errors are data: a failed tool returns `ok: false` and the runtime hands
  * the message to the model, which decides how to react. Tool failures never
  * terminate a run by themselves.
- */
-import type { WindowsShell } from "../config/settings"
-/**
+ *//**
  * Agent-local description of how to get back to output that a cap withheld.
  *
  * This is the structured counterpart to the human-readable hint in `data`. The

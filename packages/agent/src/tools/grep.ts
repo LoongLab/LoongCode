@@ -38,6 +38,9 @@ import { resolveToolPath } from "./types"
  *   silently matching something else, and JS-only constructs (`\d`, lookahead,
  *   non-greedy quantifiers) now work. Case-insensitivity is JavaScript's simple
  *   case folding, which is identical to grep's for ASCII
+ * - `include` uses the same glob dialect as the `find` tool rather than
+ *   fnmatch, so `{a,b}` alternates (it was literal before) while a POSIX
+ *   character class inside the glob is not supported
  * - a path that cannot be read is reported *with* the matches found elsewhere
  *   instead of discarding them; the note says the search was incomplete
  * - special files (FIFOs, sockets, devices) are skipped rather than read, which
@@ -98,8 +101,16 @@ export const grepTool: Tool = {
       ? resolveToolPath(searchPath, ctx?.cwd)
       : ctx?.cwd ?? process.cwd()
 
-    const entry = await stat(target).catch(() => null)
-    if (entry === null) return { ok: false, error: `Search path does not exist: ${target}` }
+    const entry = await stat(target).catch((err: NodeJS.ErrnoException) => err as Error)
+    if (entry instanceof Error) {
+      // A permission failure is not "the path does not exist", and saying so
+      // would send the model looking for a typo that is not there.
+      const code = (entry as NodeJS.ErrnoException).code
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        return { ok: false, error: `Search path does not exist: ${target}` }
+      }
+      return { ok: false, error: `Cannot read search path ${target}: ${errorMessage(entry)}` }
+    }
 
     const state: SearchState = {
       regex,
@@ -111,7 +122,7 @@ export const grepTool: Tool = {
 
     if (entry.isDirectory()) {
       const rootFailure = await walk(state, target, trimTrailingSeparators(target), "", true)
-      if (rootFailure !== null) return { ok: false, error: `Cannot read directory ${target}: ${rootFailure}` }
+      if (rootFailure !== null) return { ok: false, error: `Cannot read directory: ${rootFailure}` }
     } else if (entry.isFile()) {
       // A single explicit file: no filename prefix, which is the shape the tool
       // has always returned for this input, and an unreadable file is an error

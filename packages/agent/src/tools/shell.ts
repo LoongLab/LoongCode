@@ -34,8 +34,6 @@ export interface ShellSpec {
   readonly label: string
   /** The syntax a command for this shell must use. */
   readonly syntax: string
-  /** True when a setting chose this shell rather than the platform default. */
-  readonly selected: boolean
 }
 
 /** The Windows shell used when the setting says nothing. */
@@ -54,7 +52,6 @@ export function resolveShell(
       args: ["-c"],
       label: "sh (POSIX)",
       syntax: "POSIX shell syntax",
-      selected: false,
     }
   }
 
@@ -67,7 +64,6 @@ export function resolveShell(
       args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
       label: "powershell.exe (Windows PowerShell)",
       syntax: "Windows PowerShell syntax (cmdlets and PowerShell operators; not CMD, not POSIX)",
-      selected: selection !== undefined,
     }
   }
 
@@ -78,7 +74,6 @@ export function resolveShell(
     args: ["/d", "/s", "/c"],
     label: `${command} (CMD)`,
     syntax: "CMD syntax (built-ins and %VAR% expansion; not PowerShell, not POSIX)",
-    selected: selection !== undefined,
   }
 }
 

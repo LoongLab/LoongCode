@@ -30,8 +30,28 @@
  */
 import { spawnSync } from "node:child_process"
 
+/**
+ * The labels this module can produce: the WHATWG names `TextDecoder` accepts
+ * for the code pages a Windows console realistically reports. Spelled out here
+ * because the ambient `Encoding` type in this project is Node's BufferEncoding
+ * union, which covers neither `gbk` nor the other multi-byte labels — the
+ * runtime accepts them (the Encoding Standard's decoder set), and the
+ * `TextDecoder` construction below is the one place that has to say so.
+ */
+export type DecoderLabel =
+  | "utf-8"
+  | "gbk"
+  | "big5"
+  | "shift_jis"
+  | "euc-kr"
+  | "windows-1250"
+  | "windows-1251"
+  | "windows-1252"
+  | "windows-874"
+  | "iso-8859-1"
+
 /** `TextDecoder` label for a console code page, or null when unknown. */
-export function encodingLabelForCodePage(codePage: number): string | null {
+export function encodingLabelForCodePage(codePage: number): DecoderLabel | null {
   switch (codePage) {
     case 65001: return "utf-8"
     case 936: return "gbk"
@@ -84,7 +104,7 @@ export function decodeWithCodePage(bytes: Uint8Array, codePage: number | null): 
   if (label !== null && label !== "utf-8") {
     try {
       return {
-        text: new TextDecoder(label).decode(bytes),
+        text: new TextDecoder(label as string as ConstructorParameters<typeof TextDecoder>[0]).decode(bytes),
         note: `output is not UTF-8; decoded using code page ${codePage} (${label}), which may be inaccurate`,
       }
     } catch {
@@ -107,6 +127,9 @@ let cachedCodePage: number | null | undefined
  * `chcp` writes digits in ASCII, so reading its answer does not depend on the
  * answer. Any failure (no cmd.exe, no output, a timeout) means "unknown", and
  * callers fall back to a labelled UTF-8 decode rather than guessing.
+ *
+ * Caching is safe for what it is used for: a console switched to UTF-8 mid-run
+ * produces valid UTF-8, which never reaches this fallback at all.
  */
 export function consoleCodePage(): number | null {
   if (cachedCodePage !== undefined) return cachedCodePage
@@ -125,9 +148,4 @@ export function consoleCodePage(): number | null {
     // Unknown code page: the labelled fallback covers it.
   }
   return cachedCodePage
-}
-
-/** Test seam: forget the probed code page. */
-export function resetConsoleCodePageCache(): void {
-  cachedCodePage = undefined
 }

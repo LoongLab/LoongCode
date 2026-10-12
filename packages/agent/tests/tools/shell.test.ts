@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { buildSystemPrompt } from "../../src/context/prompt"
+import { Session } from "../../src/session/session"
 import { bashTool } from "../../src/tools/bash"
 import {
   DEFAULT_WINDOWS_SHELL,
@@ -26,7 +28,6 @@ describe("resolveShell", () => {
     expect(spec.kind).toBe("posix")
     expect(spec.command).toBe("/bin/sh")
     expect(spec.args).toEqual(["-c"])
-    expect(spec.selected).toBe(false)
   })
 
   test("a Windows shell selection does not change POSIX execution", () => {
@@ -41,7 +42,6 @@ describe("resolveShell", () => {
     expect(spec.kind).toBe("cmd")
     expect(spec.command).toBe("C:\\Windows\\System32\\cmd.exe")
     expect(spec.args).toEqual(["/d", "/s", "/c"])
-    expect(spec.selected).toBe(false)
     expect(spec.label).toContain("CMD")
   })
 
@@ -54,14 +54,12 @@ describe("resolveShell", () => {
     expect(spec.kind).toBe("powershell")
     expect(spec.command).toBe("powershell.exe")
     expect(spec.args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-    expect(spec.selected).toBe(true)
     expect(spec.label).toContain("PowerShell")
   })
 
   test("the default is CMD, stated as a constant", () => {
     expect(DEFAULT_WINDOWS_SHELL).toBe("cmd")
     expect(resolveShell("win32", DEFAULT_WINDOWS_SHELL, ENV_WITH_COMSPEC).kind).toBe("cmd")
-    expect(resolveShell("win32", DEFAULT_WINDOWS_SHELL, ENV_WITH_COMSPEC).selected).toBe(true)
   })
 })
 
@@ -99,6 +97,16 @@ describe("what the agent is told", () => {
         "Use for builds, tests, git status/diff, and any repository-specific verification. " +
         "Output is truncated to the last 50KB. The exit code is appended to the output.",
     )
+  })
+
+  test("the POSIX environment block keeps its historical lines, with no shell line", () => {
+    if (process.platform === "win32") return
+    const session = Session.create({ cwd: "/workspace" })
+    const prompt = buildSystemPrompt(session)
+    expect(prompt).toContain(
+      `<env>\nWorking directory: /workspace\nPlatform: ${process.platform}\nToday's date: `,
+    )
+    expect(prompt).not.toContain("Shell:")
   })
 })
 

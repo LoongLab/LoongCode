@@ -7,7 +7,6 @@ import {
   decodeWindowsOutput,
   decodeWithCodePage,
   encodingLabelForCodePage,
-  resetConsoleCodePageCache,
 } from "../../src/tools/encoding"
 
 /**
@@ -100,7 +99,6 @@ describe("POSIX decoding is unchanged", () => {
 
   if (unixOnly) {
     test("the probe is not attempted off Windows", () => {
-      resetConsoleCodePageCache()
       expect(consoleCodePage()).toBe(null)
     })
 
