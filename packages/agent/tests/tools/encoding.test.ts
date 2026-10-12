@@ -88,6 +88,8 @@ describe("whole-stream decisions", () => {
 })
 
 describe("POSIX decoding is unchanged", () => {
+  const unixOnly = process.platform !== "win32"
+
   test("valid UTF-8 decodes exactly", () => {
     expect(decodeUtf8(utf8("héllo\n"))).toBe("héllo\n")
   })
@@ -96,19 +98,21 @@ describe("POSIX decoding is unchanged", () => {
     expect(decodeUtf8(Buffer.from([0xc3, 0x28]))).toBe("�(")
   })
 
-  test("the probe is not attempted off Windows", () => {
-    resetConsoleCodePageCache()
-    expect(consoleCodePage()).toBe(null)
-  })
+  if (unixOnly) {
+    test("the probe is not attempted off Windows", () => {
+      resetConsoleCodePageCache()
+      expect(consoleCodePage()).toBe(null)
+    })
 
-  test("a command producing invalid UTF-8 gets no decode note on POSIX", async () => {
-    const result = await runProcess("/bin/sh", ["-c", "printf '\\303\\050'"])
-    expect(result.stdout).toBe("�(")
-    expect(result.decodeNote).toBeUndefined()
-  })
+    test("a command producing invalid UTF-8 gets no decode note on POSIX", async () => {
+      const result = await runProcess("/bin/sh", ["-c", "printf '\\303\\050'"])
+      expect(result.stdout).toBe("�(")
+      expect(result.decodeNote).toBeUndefined()
+    })
 
-  test("a normal command carries no decode note", async () => {
-    const result = await runProcess("/bin/sh", ["-c", "printf 'plain\\n'"])
-    expect(result).toEqual({ stdout: "plain\n", stderr: "", exitCode: 0 })
-  })
+    test("a normal command carries no decode note", async () => {
+      const result = await runProcess("/bin/sh", ["-c", "printf 'plain\\n'"])
+      expect(result).toEqual({ stdout: "plain\n", stderr: "", exitCode: 0 })
+    })
+  }
 })

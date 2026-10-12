@@ -96,8 +96,10 @@ describe("runtime independence", () => {
   /**
    * The bundle is a build artifact and is not in version control, so it can be
    * older than the sources beside it — asserting a property of a stale build
-   * would be a false failure. A missing or stale bundle is skipped; CI builds
-   * before testing, so the check does run there.
+   * would be a false failure. A missing or stale bundle is skipped here, and
+   * this repository runs no CI that would build it first: to exercise the
+   * check, run `bun run build:cli` before `bun test` (the packaging and
+   * release steps do exactly that, which is when the check matters most).
    */
   function bundleIsCurrent(): boolean {
     if (!existsSync(BUNDLE)) return false
