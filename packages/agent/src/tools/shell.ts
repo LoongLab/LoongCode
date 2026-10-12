@@ -6,8 +6,9 @@ import type { WindowsShell } from "../config/settings"
  * Supported execution environments, and nothing else:
  *
  * - POSIX: `/bin/sh -c`, exactly as before.
- * - Windows: CMD (`cmd.exe`, the default, taken from `%ComSpec%`) or Windows
- *   PowerShell, chosen explicitly with the `shell` setting.
+ * - Windows: Windows PowerShell (`powershell.exe`, the default) or CMD
+ *   (`cmd.exe`, taken from `%ComSpec%`), chosen with the `shell` setting. An
+ *   explicit setting always wins over the default.
  *
  * CMD and PowerShell are different languages, and neither is POSIX. The agent
  * is told which one is active — the tool description and the `<env>` block
@@ -36,8 +37,9 @@ export interface ShellSpec {
   readonly syntax: string
 }
 
-/** The Windows shell used when the setting says nothing. */
-export const DEFAULT_WINDOWS_SHELL: WindowsShell = "cmd"
+/** The Windows shell used when the setting says nothing: Windows PowerShell.
+ *  CMD remains fully supported and is selected explicitly (`shell: "cmd"`). */
+export const DEFAULT_WINDOWS_SHELL: WindowsShell = "powershell"
 
 export function resolveShell(
   platform: NodeJS.Platform,
@@ -55,25 +57,28 @@ export function resolveShell(
     }
   }
 
-  if ((selection ?? DEFAULT_WINDOWS_SHELL) === "powershell") {
+  // An explicit setting always wins; only an omitted one falls to the default.
+  const chosen = selection ?? DEFAULT_WINDOWS_SHELL
+
+  if (chosen === "cmd") {
+    const command = env.ComSpec ?? "cmd.exe"
     return {
-      kind: "powershell",
-      command: "powershell.exe",
-      // No profile, no banner, and no prompts: a command that asks a question
-      // must fail rather than wait for an answer nobody can give.
-      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
-      label: "powershell.exe (Windows PowerShell)",
-      syntax: "Windows PowerShell syntax (cmdlets and PowerShell operators; not CMD, not POSIX)",
+      kind: "cmd",
+      command,
+      args: ["/d", "/s", "/c"],
+      label: `${command} (CMD)`,
+      syntax: "CMD syntax (built-ins and %VAR% expansion; not PowerShell, not POSIX)",
     }
   }
 
-  const command = env.ComSpec ?? "cmd.exe"
   return {
-    kind: "cmd",
-    command,
-    args: ["/d", "/s", "/c"],
-    label: `${command} (CMD)`,
-    syntax: "CMD syntax (built-ins and %VAR% expansion; not PowerShell, not POSIX)",
+    kind: "powershell",
+    command: "powershell.exe",
+    // No profile, no banner, and no prompts: a command that asks a question
+    // must fail rather than wait for an answer nobody can give.
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+    label: "powershell.exe (Windows PowerShell)",
+    syntax: "Windows PowerShell syntax (cmdlets and PowerShell operators; not CMD, not POSIX)",
   }
 }
 

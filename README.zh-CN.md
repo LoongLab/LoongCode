@@ -141,24 +141,24 @@ LoongCode 会读取仓库根目录下的指令文件，在开始工作之前了�
 
 ## Windows shell
 
-在 Windows 上，命令默认在 **CMD**（`cmd.exe`）中运行。若要改用 Windows PowerShell，在 `settings.json` 中加入 `shell`：
+在 Windows 上，命令默认在 **Windows PowerShell**（`powershell.exe`）中运行。若要改用 CMD，在 `settings.json` 中加入 `shell`：
 
 ```json
 {
-  "shell": "powershell"
+  "shell": "cmd"
 }
 ```
 
 | 取值 | 使用的 shell |
 | --- | --- |
-| `"cmd"`（默认） | `cmd.exe`，取自 `%ComSpec%` |
-| `"powershell"` | `powershell.exe`，以 `-NoLogo -NoProfile -NonInteractive` 启动 |
+| `"powershell"`（默认） | `powershell.exe`，以 `-NoLogo -NoProfile -NonInteractive` 启动 |
+| `"cmd"` | `cmd.exe`，取自 `%ComSpec%` |
 
-- 该设置是全局的（`~/.loongcode/settings.json`），可在项目内（`.loongcode/settings.json`）覆盖，项目中的值优先生效。
+- 该设置是全局的（`~/.loongcode/settings.json`），可在项目内（`.loongcode/settings.json`）覆盖，项目中的值优先生效，因此显式设置不会被默认值取代。
 - 它只影响 Windows。其他平台始终使用 `/bin/sh` 运行命令。
 - CMD 与 PowerShell 是两种不同的语言：语法、内置命令和脚本互不通用，两者也都没有 POSIX 命令（`ls`、`cat`、`grep` 等）。智能体会被告知当前生效的是哪个 shell，因此会按实际运行的那个来编写命令。
-- 不会自动切换 shell。所选 shell 不可用时，命令会失败并指出是哪一个，而不会改用其他 shell 执行；也不会自动选用 `pwsh`（PowerShell 7）。
-- 需要 PowerShell 语法、cmdlet 或仅 PowerShell 才有的工具时，选择 `powershell`；其余情况保持默认的 `cmd`，即使用 Windows 自带的 shell。
+- 不会自动切换 shell。所选 shell 不可用时，命令会失败并指出是哪一个，而不会改用其他 shell 执行（默认的 PowerShell 也不例外）；也不会自动选用 `pwsh`（PowerShell 7）。
+- 需要 CMD 语法、批处理内置命令或依赖 `%ComSpec%` 的工具时，选择 `cmd`；其余情况保持默认，即使用 PowerShell 的语法和 cmdlet。
 
 ## 脚本与自动化
 

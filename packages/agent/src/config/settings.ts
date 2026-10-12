@@ -19,8 +19,8 @@ export interface LoongCodeSettings {
     thresholdPct: number
   }
   theme?: "dark" | "light"
-  /** Which Windows shell the bash tool runs commands in: "cmd" (default,
-   *  cmd.exe via %ComSpec%) or "powershell" (Windows PowerShell). Windows
+  /** Which Windows shell the bash tool runs commands in: "powershell"
+   *  (default, Windows PowerShell) or "cmd" (cmd.exe via %ComSpec%). Windows
    *  only — POSIX platforms always run commands in /bin/sh. There is no
    *  fallback: if the selected shell is unavailable the command fails with an
    *  actionable error instead of running somewhere else. */
@@ -30,7 +30,7 @@ export interface LoongCodeSettings {
 const DEFAULTS: LoongCodeSettings = {
   autoCompact: { enabled: true, thresholdPct: 80 },
   theme: "dark",
-  shell: "cmd",
+  shell: "powershell",
 }
 
 export interface LoadedSettings {

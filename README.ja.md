@@ -141,24 +141,24 @@ LoongCode は、リポジトリのルートにある指示ファイルを読み�
 
 ## Windows シェル
 
-Windows では、コマンドは既定で **CMD**（`cmd.exe`）で実行されます。代わりに Windows PowerShell で実行するには、`settings.json` に `shell` を追加します。
+Windows では、コマンドは既定で **Windows PowerShell**（`powershell.exe`）で実行されます。代わりに CMD で実行するには、`settings.json` に `shell` を追加します。
 
 ```json
 {
-  "shell": "powershell"
+  "shell": "cmd"
 }
 ```
 
 | 値 | 使用されるシェル |
 | --- | --- |
-| `"cmd"`（既定） | `cmd.exe`（`%ComSpec%` から取得） |
-| `"powershell"` | `powershell.exe`（`-NoLogo -NoProfile -NonInteractive` 付きで起動） |
+| `"powershell"`（既定） | `powershell.exe`（`-NoLogo -NoProfile -NonInteractive` 付きで起動） |
+| `"cmd"` | `cmd.exe`（`%ComSpec%` から取得） |
 
-- この設定はグローバル（`~/.loongcode/settings.json`）で、プロジェクト単位（`.loongcode/settings.json`）で上書きでき、プロジェクトの値が優先されます。
+- この設定はグローバル（`~/.loongcode/settings.json`）で、プロジェクト単位（`.loongcode/settings.json`）で上書きでき、プロジェクトの値が優先されます。明示した設定が既定値で置き換えられることはありません。
 - 影響するのは Windows のみです。他のプラットフォームは常に `/bin/sh` でコマンドを実行します。
 - CMD と PowerShell は別の言語です。構文・組み込みコマンド・スクリプトに互換性はなく、POSIX のコマンド（`ls`、`cat`、`grep` など）はどちらにも存在しません。エージェントには有効なシェルが伝えられるため、実際に実行されるシェルに合わせてコマンドを書きます。
-- シェルが自動で切り替わることはありません。選択したシェルが利用できない場合、コマンドはそのシェル名を示して失敗し、別のシェルでは実行されません。`pwsh`（PowerShell 7）が自動で選ばれることもありません。
-- PowerShell の構文・コマンドレット・PowerShell 専用のツールを使いたい場合は `powershell` を、それ以外は既定の `cmd`（Windows 標準のシェル）を選びます。
+- シェルが自動で切り替わることはありません。選択したシェルが利用できない場合、コマンドはそのシェル名を示して失敗し、別のシェルでは実行されません（既定の PowerShell の場合も同様です）。`pwsh`（PowerShell 7）が自動で選ばれることもありません。
+- CMD の構文・バッチの組み込みコマンド・`%ComSpec%` を前提とするツールが必要な場合は `cmd` を、それ以外は既定の PowerShell（構文とコマンドレット）を使います。
 
 ## スクリプトと自動化
 

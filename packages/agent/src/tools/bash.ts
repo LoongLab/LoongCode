@@ -11,7 +11,7 @@ const MAX_TIMEOUT = 600_000
  * The description states the shell the command will actually run in, because
  * the model cannot see the platform and the two Windows shells are different
  * languages. The POSIX text is byte-identical to what it has always been; the
- * Windows text names CMD, PowerShell, the setting that chooses between them,
+ * Windows text names PowerShell, CMD, the setting that chooses between them,
  * and the fact that POSIX commands are unavailable — it does not claim CMD and
  * PowerShell are interchangeable, and it points at the environment block,
  * which states the active shell for the run.
@@ -23,11 +23,11 @@ const POSIX_DESCRIPTION =
 
 const WINDOWS_DESCRIPTION =
   "Execute a command line in the repository and observe its output. On Windows the command runs in " +
-  'CMD (cmd.exe) by default, or in Windows PowerShell when "shell" is set to "powershell" in settings.json; ' +
+  'Windows PowerShell by default, or in CMD (cmd.exe) when "shell" is set to "cmd" in settings.json; ' +
   "the active shell and its syntax are stated in the <env> block of the system prompt. " +
   "CMD and PowerShell are different languages and their syntax is not interchangeable, and POSIX commands " +
-  "(ls, cat, rm, grep, ...) do not exist in either — use dir/type/del/where, the read/grep/find tools, or the " +
-  "PowerShell cmdlet with the same purpose. Use for builds, tests, git status/diff, and any " +
+  "(ls, cat, rm, grep, ...) do not exist in either — use the PowerShell cmdlet with the same purpose, " +
+  "dir/type/del/where under CMD, or the read/grep/find tools. Use for builds, tests, git status/diff, and any " +
   "repository-specific verification. Output is truncated to the last 50KB. The exit code is appended to the output."
 
 /** Exit-code sentinel appended to output so the model always sees the
