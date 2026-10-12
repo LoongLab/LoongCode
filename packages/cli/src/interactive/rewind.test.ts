@@ -129,7 +129,9 @@ const flush = async (times = 8): Promise<void> => {
 interface Turn {
   readonly prompt: string
   readonly write?: { filePath: string; content: string }
-  /** A shell command this turn runs through the `bash` tool. */
+  /** A shell command this turn runs through the `bash` tool. Spelled with
+   *  `echo`, which both /bin/sh and cmd.exe understand, so the case does not
+   *  depend on which shell the platform provides. */
   readonly bash?: string
 }
 
@@ -475,7 +477,7 @@ describe("rewind — accounting and context", () => {
   })
 
   test("switching sessions carries over neither figures nor warning", async () => {
-    const h = await makeApp([{ prompt: "a shell turn", bash: "true" }])
+    const h = await makeApp([{ prompt: "a shell turn", bash: "echo ok" }])
     await rewindTo(h, 1, 1)
     expect(screen(h)).toContain("not undone")
 
@@ -506,7 +508,7 @@ describe("rewind — accounting and context", () => {
 
 describe("rewind — shell side effects in the TUI", () => {
   test("a rewound shell turn warns, and the warning persists", async () => {
-    const h = await makeApp([{ prompt: "run the tests", bash: "true" }])
+    const h = await makeApp([{ prompt: "run the tests", bash: "echo ok" }])
     expect(screen(h)).not.toContain("not undone")
 
     await rewindTo(h, 1, 1) // newest checkpoint, restore code and conversation
@@ -528,7 +530,7 @@ describe("rewind — shell side effects in the TUI", () => {
   })
 
   test("the warning survives a reload", async () => {
-    const h = await makeApp([{ prompt: "run the tests", bash: "true" }])
+    const h = await makeApp([{ prompt: "run the tests", bash: "echo ok" }])
     await rewindTo(h, 1, 1)
     const reloaded = await remount(h)
     expect(screen(reloaded)).toContain("1 shell command in 1 rewound turn not undone")
@@ -537,7 +539,7 @@ describe("rewind — shell side effects in the TUI", () => {
   test("summarizing a shell turn away warns as well, and keeps the files", async () => {
     const h = await makeApp([
       { prompt: "first", write: { filePath: "a.txt", content: "A\n" } },
-      { prompt: "shell turn", bash: "true" },
+      { prompt: "shell turn", bash: "echo ok" },
     ])
     await rewindTo(h, 1, 4) // "shell turn", the fourth action: summarize from here
 
@@ -558,7 +560,7 @@ describe("rewind — shell side effects in the TUI", () => {
   })
 
   test("a shell-only turn is offered, and rewinding it removes the turn", async () => {
-    const h = await makeApp([{ prompt: "just run it", bash: "true" }])
+    const h = await makeApp([{ prompt: "just run it", bash: "echo ok" }])
     await openRewind(h)
     // The row reports the invocation even though the turn named no file.
     expect(screen(h)).toContain("1 shell command")
@@ -576,7 +578,7 @@ describe("rewind — shell side effects in the TUI", () => {
   test("a new turn reusing a freed index does not resurrect a stale checkpoint", async () => {
     const h = await makeApp([
       { prompt: "first", write: { filePath: "a.txt", content: "A\n" } },
-      { prompt: "second", bash: "true" },
+      { prompt: "second", bash: "echo ok" },
       { prompt: "third", write: { filePath: "c.txt", content: "C\n" } },
     ])
     // Rows are newest-first: "second" is row 2. Conversation only, so the
@@ -603,8 +605,8 @@ describe("rewind — shell side effects in the TUI", () => {
 
   test("a retained turn's shell commands are not attributed to the warning", async () => {
     const h = await makeApp([
-      { prompt: "kept shell turn", bash: "true" }, // retained: its command stays out of the count
-      { prompt: "discarded shell turn", bash: "true" },
+      { prompt: "kept shell turn", bash: "echo ok" }, // retained: its command stays out of the count
+      { prompt: "discarded shell turn", bash: "echo ok" },
       { prompt: "later", write: { filePath: "b.txt", content: "B\n" } },
     ])
     await rewindTo(h, 2, 2)
@@ -617,8 +619,8 @@ describe("rewind — shell side effects in the TUI", () => {
 
   test("every discarded shell turn is counted", async () => {
     const h = await makeApp([
-      { prompt: "first", bash: "true" },
-      { prompt: "second", bash: "true" },
+      { prompt: "first", bash: "echo ok" },
+      { prompt: "second", bash: "echo ok" },
     ])
     // Rows are newest-first, so the oldest turn is the last row — rewinding to
     // it discards both turns.
@@ -632,7 +634,7 @@ describe("rewind — shell side effects in the TUI", () => {
   test("a new turn with the same prompt at the same index is not the removed turn", async () => {
     const h = await makeApp([
       { prompt: "kept", write: { filePath: "a.txt", content: "A\n" } },
-      { prompt: "repeat", bash: "true" },
+      { prompt: "repeat", bash: "echo ok" },
     ])
     await rewindTo(h, 1, 2) // "repeat", conversation only
     expect(flat(screen(h))).toContain("1 shell command in 1 rewound turn not undone")
@@ -699,7 +701,7 @@ describe("rewind — shell side effects in the TUI", () => {
   test("only discarded turns are counted, and a later rewind cannot clear the warning", async () => {
     const h = await makeApp([
       { prompt: "kept", write: { filePath: "a.txt", content: "A\n" } }, // no shell, retained
-      { prompt: "shell turn", bash: "true" },
+      { prompt: "shell turn", bash: "echo ok" },
       { prompt: "later", write: { filePath: "b.txt", content: "B\n" } },
     ])
     // "shell turn" is row 2; discarding it and "later" leaves "kept" alone,

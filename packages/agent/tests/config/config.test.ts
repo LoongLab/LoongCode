@@ -222,3 +222,46 @@ describe("the agent config root", () => {
     }
   })
 })
+
+describe("the Windows shell setting", () => {
+  /** Runs `body` with the config root and project directory redirected to
+   *  fresh temporary directories, so no user file is read or written. */
+  function isolated(body: (dir: string) => void): void {
+    const dir = tempDir()
+    const previous = process.env.LOONGCODE_CONFIG_DIR
+    process.env.LOONGCODE_CONFIG_DIR = join(dir, "global")
+    try {
+      mkdirSync(join(dir, "global"), { recursive: true })
+      body(dir)
+    } finally {
+      if (previous === undefined) delete process.env.LOONGCODE_CONFIG_DIR
+      else process.env.LOONGCODE_CONFIG_DIR = previous
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  test("defaults to cmd: the existing Windows behaviour stays the default", () => {
+    isolated(dir => {
+      expect(loadSettings(dir).settings.shell).toBe("cmd")
+    })
+  })
+
+  test("powershell can be selected, and a project value overrides a global one", () => {
+    isolated(dir => {
+      mkdirSync(join(dir, ".loongcode"), { recursive: true })
+      writeFileSync(projectSettingsPath(dir), JSON.stringify({ shell: "powershell" }))
+      expect(loadSettings(dir).settings.shell).toBe("powershell")
+
+      writeFileSync(globalSettingsPath(), JSON.stringify({ shell: "cmd" }))
+      expect(loadSettings(dir).settings.shell).toBe("powershell")
+    })
+  })
+
+  test("an unknown shell is rejected, naming the accepted values", () => {
+    isolated(dir => {
+      mkdirSync(join(dir, ".loongcode"), { recursive: true })
+      writeFileSync(projectSettingsPath(dir), JSON.stringify({ shell: "bash" }))
+      expect(() => loadSettings(dir)).toThrow(/shell must be "cmd" or "powershell"/)
+    })
+  })
+})

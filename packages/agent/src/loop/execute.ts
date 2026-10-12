@@ -11,6 +11,7 @@
  * recovery; see `Session.recover`.
  */
 import type { ModelAssistantPart, ModelResponse } from "@loongcode/model"
+import type { WindowsShell } from "../config/settings"
 import { toolDurationMs } from "../session/ledger"
 import type { Session } from "../session/session"
 import type { SessionMessage } from "../session/types"
@@ -39,6 +40,8 @@ export async function executeTool(
     reissue?: boolean
     signal?: AbortSignal
     onEvent?: (event: RunEvent) => void
+    /** Windows shell selection from the user's settings (see tools/shell.ts). */
+    shell?: WindowsShell
     /**
      * Awaited immediately before the tool performs its side effect, so file
      * checkpoints capture the state a tool is about to overwrite rather than
@@ -84,6 +87,7 @@ export async function executeTool(
         toolCallId,
         cwd: session.cwd,
         signal: opts.signal,
+        shell: opts.shell,
         onOutput: (text: string) => {
           emit({ type: "tool_progress", iteration: opts.iteration, toolCallId, name, text })
         },

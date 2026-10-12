@@ -74,8 +74,11 @@ describe("filesystem semantics preserved by the migration", () => {
     const { dir, cleanup } = tempWorkspace()
     mkdirSync(join(dir, "sub"), { recursive: true })
     writeFileSync(join(dir, "sub/inside.txt"), "here")
+    // Listing a directory is `ls` or `dir /b` depending on the shell the bash
+    // tool runs; both print the bare entry names, which is what this asserts.
+    const listDirectory = process.platform === "win32" ? "dir /b" : "ls"
     const result = await CODING_TOOLS.get("bash")!.execute(
-      { command: "ls", workdir: "sub" },
+      { command: listDirectory, workdir: "sub" },
       ctx(dir),
     )
     expect(result.ok).toBe(true)

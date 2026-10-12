@@ -2,6 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { configDir } from "./dir"
 
+/** Windows shells the bash tool can be configured to run commands in. CMD and
+ *  PowerShell are different languages; the product never switches between them
+ *  on its own. */
+export type WindowsShell = "cmd" | "powershell"
+
 /** Runtime-tunable settings: global file merged under project
  *  file (project wins), nested objects merge recursively. */
 export interface LoongCodeSettings {
@@ -14,11 +19,18 @@ export interface LoongCodeSettings {
     thresholdPct: number
   }
   theme?: "dark" | "light"
+  /** Which Windows shell the bash tool runs commands in: "cmd" (default,
+   *  cmd.exe via %ComSpec%) or "powershell" (Windows PowerShell). Windows
+   *  only — POSIX platforms always run commands in /bin/sh. There is no
+   *  fallback: if the selected shell is unavailable the command fails with an
+   *  actionable error instead of running somewhere else. */
+  shell?: WindowsShell
 }
 
 const DEFAULTS: LoongCodeSettings = {
   autoCompact: { enabled: true, thresholdPct: 80 },
   theme: "dark",
+  shell: "cmd",
 }
 
 export interface LoadedSettings {
@@ -65,6 +77,12 @@ function validateSettings(input: unknown, path: string): Partial<LoongCodeSettin
       throw new Error(`invalid settings file ${path}: theme must be "dark" or "light"`)
     }
     out.theme = record.theme
+  }
+  if (record.shell !== undefined) {
+    if (record.shell !== "cmd" && record.shell !== "powershell") {
+      throw new Error(`invalid settings file ${path}: shell must be "cmd" or "powershell"`)
+    }
+    out.shell = record.shell
   }
   if (record.autoCompact !== undefined) {
     if (typeof record.autoCompact !== "object" || record.autoCompact === null) {

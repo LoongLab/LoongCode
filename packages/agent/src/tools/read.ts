@@ -1,5 +1,6 @@
 import { open, readdir, readFile, stat } from "node:fs/promises"
 import * as path from "node:path"
+import { looksBinary } from "./binary"
 import type { Tool, ToolExecutionContext, ToolResult } from "./types"
 import { resolveToolPath } from "./types"
 import { levenshtein } from "./levenshtein"
@@ -241,15 +242,9 @@ async function readLines(
 
 function isBinaryFile(filepath: string, bytes: Uint8Array): boolean {
   if (BINARY_EXTENSIONS.has(path.extname(filepath).toLowerCase())) return true
-  if (bytes.length === 0) return false
-
-  const len = Math.min(bytes.length, SAMPLE_BYTES)
-  let nonPrintable = 0
-  for (let i = 0; i < len; i++) {
-    if (bytes[i] === 0) return true
-    if (bytes[i] < 9 || (bytes[i] > 13 && bytes[i] < 32)) nonPrintable++
-  }
-  return nonPrintable / len > 0.3
+  // The content rule is shared with `grep` (see tools/binary.ts); the
+  // extension list above is `read`'s own, additional policy.
+  return looksBinary(bytes)
 }
 
 function formatFileOutput(

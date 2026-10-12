@@ -700,26 +700,30 @@ describe("rewind — file restoration", () => {
     }
   })
 
-  test("refuses a symlink rather than writing through it", async () => {
-    const { dir, cleanup } = workspace()
-    try {
-      const outside = join(dir, "..", `loongcode-outside-${Date.now()}.txt`)
-      writeFileSync(outside, "outside\n")
-      symlinkSync(outside, join(dir, "link.txt"))
-      const state = await readFileState(join(dir, "link.txt"))
-      expect(state.unrestorable).toBe("symlink")
+  // Creating a symlink needs a privilege Windows does not grant by default,
+  // and the assertion is about POSIX symlink semantics anyway.
+  if (process.platform !== "win32") {
+    test("refuses a symlink rather than writing through it", async () => {
+      const { dir, cleanup } = workspace()
+      try {
+        const outside = join(dir, "..", `loongcode-outside-${Date.now()}.txt`)
+        writeFileSync(outside, "outside\n")
+        symlinkSync(outside, join(dir, "link.txt"))
+        const state = await readFileState(join(dir, "link.txt"))
+        expect(state.unrestorable).toBe("symlink")
 
-      const outcome = await restoreFiles(dir, [
-        { path: "link.txt", before: { existed: true, content: "x", mode: null } },
-      ])
-      expect(outcome.failed).toHaveLength(1)
-      expect(outcome.failed[0]!.reason).toContain("symlink")
-      expect(readFileSync(outside, "utf-8")).toBe("outside\n") // untouched
-      rmSync(outside, { force: true })
-    } finally {
-      cleanup()
-    }
-  })
+        const outcome = await restoreFiles(dir, [
+          { path: "link.txt", before: { existed: true, content: "x", mode: null } },
+        ])
+        expect(outcome.failed).toHaveLength(1)
+        expect(outcome.failed[0]!.reason).toContain("symlink")
+        expect(readFileSync(outside, "utf-8")).toBe("outside\n") // untouched
+        rmSync(outside, { force: true })
+      } finally {
+        cleanup()
+      }
+    })
+  }
 })
 
 describe("rewind — conversation restoration", () => {

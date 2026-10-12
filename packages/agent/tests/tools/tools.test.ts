@@ -7,6 +7,14 @@ import { truncateOutput } from "../../src/tools/truncate"
 
 const ctx = (cwd: string) => ({ cwd })
 
+/** A command with the same effect in whichever shell the platform runs: the
+ *  bash tool uses /bin/sh on POSIX and cmd.exe on Windows, and the two do not
+ *  share a spelling for "list a directory" or for sequencing with an exit. */
+const listDirectory = () => (process.platform === "win32" ? "dir /b" : "ls")
+const printBothStreamsAndExit7 = () => process.platform === "win32"
+  ? "echo out & echo err 1>&2 & exit /b 7"
+  : "echo out; echo err 1>&2; exit 7"
+
 function tempWorkspace(): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "loongcode-tools-test-"))
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
@@ -195,7 +203,7 @@ describe("coding tools (AC2/AC3/AC4)", () => {
   test("bash captures stdout, stderr, and exit codes (AC4)", async () => {
     const { dir, cleanup } = tempWorkspace()
     const result = await CODING_TOOLS.get("bash")!.execute({
-      command: "echo out; echo err 1>&2; exit 7",
+      command: printBothStreamsAndExit7(),
     }, ctx(dir))
     expect(result.ok).toBe(true)
     if (result.ok) {
@@ -233,7 +241,7 @@ describe("coding tools (AC2/AC3/AC4)", () => {
     const { dir, cleanup } = tempWorkspace()
     writeFileSync(join(dir, "marker.txt"), "here")
     const tool = CODING_TOOLS.get("bash")!
-    const result = await tool.execute({ command: "ls" }, ctx(dir))
+    const result = await tool.execute({ command: listDirectory() }, ctx(dir))
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.data).toContain("marker.txt")
     cleanup()

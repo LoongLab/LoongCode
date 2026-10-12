@@ -31,6 +31,8 @@ export interface RunDeps {
   skills?: import("../config/resources").Skill[]
   /** Proactive compaction settings. */
   autoCompact?: { enabled: boolean; thresholdPct: number }
+  /** Windows shell for the bash tool, from the user's settings. */
+  shell?: import("../config/settings").WindowsShell
   /** Toolset override; defaults to the fixed coding toolset. */
   tools?: ReadonlyMap<string, Tool>
   onEvent?: (event: RunEvent) => void
