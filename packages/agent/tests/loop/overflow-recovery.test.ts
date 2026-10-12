@@ -337,6 +337,131 @@ describe("recovery is bounded and honest when it cannot help", () => {
     }
   })
 
+  test("both overflow branches draw on the same recovery budget", async () => {
+    const notes = notesDir(24)
+    try {
+      const paths = notes.paths.slice(0, 16)
+      // A provider rejection and a reported overflow alternate: the history
+      // grows past the provider's limit, a recovery trims it under that limit,
+      // and the next response reports an overflow of its own. Two triggers, one
+      // budget — if they did not share it, this run would recover more than five
+      // times.
+      const script = paths.map((path, i) =>
+        toolCallResponse([readCall(`call_${i}`, path)], { usage: { inputTokens: i < 3 ? 400 : 6_200 } }),
+      )
+      const { agent, model, dir, cleanup } = agentFor(new FakeModel(script, { ...LIMITS, maxInputTokens: 5_000 }))
+      const session = agent.createSession(dir)
+      const events: RunEvent[] = []
+
+      const result = await agent.run(session, "read everything", { onEvent: event => events.push(event) })
+
+      const triggers = (session.runs[0]!.compactionSkips ?? []).map(skip => skip.trigger)
+      expect({
+        reason: result.finishReason,
+        error: result.error,
+        triggers,
+        reductions: events.filter(event => event.type === "projection_reduced").length,
+        requests: model.requests.length,
+      }).toMatchObject({ reason: "error", error: expect.stringContaining("projection recoveries are spent") })
+
+      // Both overflow branches ran, and together they spent exactly the one bound.
+      expect(triggers).toContain("provider")
+      expect(triggers).toContain("reactive")
+      expect(events.filter(event => event.type === "projection_reduced")).toHaveLength(5)
+
+      cleanup()
+    } finally {
+      notes.cleanup()
+    }
+  })
+
+  test("proactive no-progress is not repeated while the history it reads is unchanged", async () => {
+    const notes = notesDir(12)
+    try {
+      const { agent, model, dir, cleanup } = agentFor(
+        new FakeModel(
+          [
+            toolCallResponse([readCall("call_0", notes.paths[0]!)], { usage: { inputTokens: 5_000 } }),
+            toolCallResponse([readCall("call_1", notes.paths[1]!)], { usage: { inputTokens: 5_000 } }),
+            textResponse("finished"),
+          ],
+          LIMITS,
+        ),
+      )
+      const session = agent.createSession(dir)
+      const events: RunEvent[] = []
+
+      const result = await agent.run(session, "read the notes", { onEvent: event => events.push(event) })
+
+      expect(result.finishReason).toBe("stop")
+      // Three iterations under pressure, one verdict: the history compaction
+      // reads never moved, so the later iterations neither retried the attempt
+      // nor reported it again.
+      expect(model.requests).toHaveLength(3)
+      expect(events.filter(event => event.type === "compaction_skipped")).toHaveLength(1)
+      expect(session.runs[0]!.compactionSkips).toEqual([{ reason: "empty-tail", trigger: "proactive", count: 1 }])
+
+      cleanup()
+    } finally {
+      notes.cleanup()
+    }
+  })
+
+  test("a history change permits another proactive attempt", async () => {
+    const notes = notesDir(12)
+    try {
+      const paths = notes.paths
+      const { agent, model, dir, cleanup } = agentFor(
+        new FakeModel(
+          [
+            toolCallResponse([readCall("call_0", paths[0]!), readCall("call_1", paths[1]!)], {
+              usage: { inputTokens: 5_000 },
+            }),
+            // Consumed by the stream the steering interrupts.
+            toolCallResponse([readCall("call_2", paths[2]!)]),
+            textResponse("summary of the earlier work"),
+            textResponse("finished after the steer"),
+          ],
+          LIMITS,
+        ),
+      )
+      const session = agent.createSession(dir)
+      const events: RunEvent[] = []
+      let steered = false
+
+      const result = await agent.run(session, "read the notes", {
+        onEvent: event => {
+          events.push(event)
+          // A steering note is the one thing a running turn can add that moves
+          // the boundary compaction reads.
+          if (!steered && event.type === "tool_result") {
+            steered = true
+            session.steer("now read the third note")
+          }
+        },
+      })
+
+      expect(result.finishReason).toBe("stop")
+      const steeredAt = events.findIndex(event => event.type === "steered")
+      expect(steeredAt).toBeGreaterThan(-1)
+      // Before the steer: the verdict was reached once, and reported once.
+      const before = events.slice(0, steeredAt).filter(event => event.type === "compaction_skipped")
+      expect(before).toHaveLength(1)
+      expect(before[0]).toMatchObject({ reason: "empty-tail", trigger: "proactive" })
+      // After it the boundary moved, so another attempt is made — which is the
+      // whole difference from the unchanged case above.
+      const after = events
+        .slice(steeredAt)
+        .filter(event => event.type === "compaction_skipped" || event.type === "compaction")
+      expect(after.length).toBeGreaterThan(0)
+      expect(after[0]).toMatchObject({ trigger: "proactive" })
+
+      cleanup()
+    } finally {
+      notes.cleanup()
+    }
+  })
+
   test("proactive no-progress is reported, and does not end the run", async () => {
     const notes = notesDir(12)
     try {

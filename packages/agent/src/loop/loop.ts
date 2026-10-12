@@ -16,7 +16,7 @@ import type { Session } from "../session/session"
 import type { CompactionSkipReason, CompactionTrigger } from "../session/types"
 import type { RunEvent } from "./events"
 import { toModelTools, type Tool } from "../tools"
-import { Compactor } from "../context/compaction"
+import { Compactor, lastUserIndexIn } from "../context/compaction"
 import { assistantContentFrom, executeTool } from "./execute"
 import type { RunResult } from "./run"
 import { buildSystemPrompt } from "../context/prompt"
@@ -77,6 +77,21 @@ function compactionSkippedEvent(
   trigger: CompactionTrigger,
 ): RunEvent {
   return { type: "compaction_skipped", iteration, reason, trigger }
+}
+
+/**
+ * What a compaction verdict depends on: where the last user message sits, and
+ * whether the history ends there.
+ *
+ * A running turn only appends after the last user message, so this stays put
+ * while the run works — which is what makes it the answer to "could another
+ * attempt see anything new?" without recomputing a verdict that cannot have
+ * changed. A new user message (a task, a steering note) or a history rewrite
+ * moves it.
+ */
+function compactionStateKey(session: Session): string {
+  const lastUser = lastUserIndexIn(session.messages)
+  return `${lastUser}:${lastUser === session.messages.length - 1}`
 }
 
 /** Resolves after `ms`, or early with `true` when the signal aborts. */
@@ -210,6 +225,13 @@ export class AgentLoop {
      * exact request — and sending it again cannot change the answer.
      */
     let lastRecoveredRequest: string | null = null
+    /**
+     * The history state at the last proactive no-progress verdict, so the same
+     * attempt is not repeated — with its checkpoint and its event — on every
+     * iteration that changes nothing compaction could act on. Cleared when a
+     * compaction succeeds.
+     */
+    let proactiveNoProgress: string | null = null
     const autoCompact = opts.autoCompact ?? { enabled: true, thresholdPct: 80 }
     const recentCalls: string[] = []
 
@@ -232,17 +254,27 @@ export class AgentLoop {
       if (autoCompact.enabled && pendingRecovery === null) {
         const threshold = Math.floor(budget.inputBudget * (autoCompact.thresholdPct / 100))
         if (lastInputTokens >= threshold && lastInputTokens > 0) {
-          const outcome = await compactNow()
-          // Proactive compaction is best-effort: a failure here is not fatal,
-          // because the reactive and provider paths still guard the request.
-          if (outcome.status === "compacted") {
-            emit(compactionEvent(outcome))
-          } else if (outcome.status === "no-progress") {
-            // Not fatal, but never silent: "the history cannot shrink" is the
-            // fact that decides what happens when the budget runs out, and
-            // discarding it here is what made the original failure
-            // undiagnosable.
-            emit(compactionSkippedEvent(iterations, outcome.reason, "proactive"))
+          // The key is taken before the attempt: the verdict belongs to the
+          // state that produced it.
+          const state = compactionStateKey(this.session)
+          if (state !== proactiveNoProgress) {
+            const outcome = await compactNow()
+            // Proactive compaction is best-effort: a failure here is not fatal,
+            // because the reactive and provider paths still guard the request.
+            if (outcome.status === "compacted") {
+              proactiveNoProgress = null
+              emit(compactionEvent(outcome))
+            } else if (outcome.status === "no-progress") {
+              // Not fatal, but never silent. Reported once per unchanged state
+              // rather than once per iteration: `empty-tail` and
+              // `no-compactable-region` are verdicts about the message list,
+              // which a running turn cannot change, and `empty-summary` is a
+              // summarization call that returned nothing. Repeating either on an
+              // unchanged history buys no information, and costs a checkpoint
+              // (plus, for a summary, a whole request).
+              proactiveNoProgress = state
+              emit(compactionSkippedEvent(iterations, outcome.reason, "proactive"))
+            }
           }
         }
       }
@@ -281,6 +313,9 @@ export class AgentLoop {
         const projected = this.session.toRequestMessages({
           lastInputTokens,
           inputBudget: budget.inputBudget,
+          // The session's directory, so recovery can tell whether a later write
+          // names the file an earlier read came from instead of guessing.
+          cwd: this.session.cwd,
           // Forwarded only when a sink exists, so a run without one builds
           // exactly the context it built before.
           ...(opts.onPrune === undefined && recovery === null

@@ -88,8 +88,13 @@ export function resolveToolPath(filepath: string, cwd?: string): string {
   return resolved
 }
 
-/** Resolves `.`/`..` segments without touching the filesystem. */
-function normalizePath(p: string): string {
+/** Resolves `.`/`..` segments without touching the filesystem.
+ *
+ *  Exported because path *identity* is decided in more than one layer: the
+ *  request projection compares the path a read named against the paths later
+ *  writes named, collapsing both the way the tools did before resolving them
+ *  against the session directory. */
+export function normalizePath(p: string): string {
   const parts = p.split("/")
   const out: string[] = []
   for (const part of parts) {

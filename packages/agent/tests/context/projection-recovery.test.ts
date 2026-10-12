@@ -68,6 +68,16 @@ function singleTurnHistory(reads: number): ProjectionMessage[] {
 const markers = (messages: readonly ModelMessage[]) =>
   messages.flatMap(m => (m.role === "tool" ? m.content.map(r => r.output) : [])).filter(isPrunedToolOutput)
 
+/** Every call id, and every result id, in message order. */
+function pairing(messages: readonly ModelMessage[]): { calls: string[]; results: string[] } {
+  return {
+    calls: messages.flatMap(m =>
+      m.role === "assistant" ? m.content.filter(part => part.type === "tool_call").map(part => part.toolCallId) : [],
+    ),
+    results: messages.flatMap(m => (m.role === "tool" ? m.content.map(result => result.toolCallId) : [])),
+  }
+}
+
 /** The surviving text of every tool result, `undefined` where withheld. */
 const resultTexts = (messages: readonly ModelMessage[]): Array<string | undefined> =>
   messages.flatMap(m =>
@@ -215,10 +225,253 @@ describe("nothing without a stated way back is withheld", () => {
 })
 
 // ---------------------------------------------------------------------------
+// a route through a file is only as good as the file
+// ---------------------------------------------------------------------------
+
+describe("a source route is offered only while its file is intact", () => {
+  /** Four reads, then whatever the run does next. */
+  const fourReadsAnd = (...tail: ProjectionMessage[]): ProjectionMessage[] => [
+    user("task"),
+    ...readTurn("c1", "/notes/a.md", "a".repeat(4_000)),
+    ...readTurn("c2", "/notes/b.md", "b".repeat(4_000)),
+    ...readTurn("c3", "/notes/c.md", "c".repeat(4_000)),
+    ...readTurn("c4", "/notes/d.md", "d".repeat(4_000)),
+    ...tail,
+  ]
+
+  test("a read whose file a later write names is kept, not offered a stale route", () => {
+    const history = fourReadsAnd(
+      call("w1", "edit", { filePath: "/notes/a.md", oldString: "a", newString: "b" }),
+      answer("w1", "edit", "edited"),
+    )
+
+    const projected = pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true })
+
+    // c1 keeps its content: following its path would return the edit, not what
+    // the model read. c2 is withheld, c3 and c4 are the newest two.
+    expect(markers(projected).map(marker => marker.value.sourcePath)).toEqual(["/notes/b.md"])
+    expect(resultTexts(projected)).toContain("a".repeat(4_000))
+  })
+
+  test("a later write to a different file does not protect it", () => {
+    const history = fourReadsAnd(
+      call("w1", "write", { filePath: "/notes/z.md", content: "unrelated" }),
+      answer("w1", "write", "written"),
+    )
+
+    expect(markers(pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true })).map(m => m.value.sourcePath))
+      .toEqual(["/notes/a.md", "/notes/b.md"])
+  })
+
+  test("without a session directory, paths in different forms count as possibly one file", () => {
+    // An absolute read and a relative write, and nothing here can tell whether
+    // they name one file. Every read keeps its content rather than being offered
+    // a route that might return something the model never read.
+    const history = fourReadsAnd(
+      call("w1", "edit", { filePath: "notes/a.md", oldString: "a", newString: "b" }),
+      answer("w1", "edit", "edited"),
+    )
+
+    const projected = pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true })
+
+    expect(markers(projected)).toEqual([])
+    expect(resultTexts(projected)).toContain("a".repeat(4_000))
+  })
+
+  test("with the session directory, the same file is recognised through either form", () => {
+    const cwd = "/workspace"
+    // The read was relative; the edit names the absolute path it resolved to.
+    const history: ProjectionMessage[] = [
+      user("task"),
+      ...readTurn("c1", "notes/a.md", "a".repeat(4_000)),
+      ...readTurn("c2", "notes/b.md", "b".repeat(4_000)),
+      ...readTurn("c3", "notes/c.md", "c".repeat(4_000)),
+      ...readTurn("c4", "notes/d.md", "d".repeat(4_000)),
+      call("w1", "edit", { filePath: "/workspace/notes/a.md", oldString: "a", newString: "b" }),
+      answer("w1", "edit", "edited"),
+    ]
+
+    const withheld = markers(pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true, cwd }))
+
+    expect(withheld.map(marker => marker.value.sourcePath)).toEqual(["notes/b.md"])
+  })
+
+  test("with the session directory, different files are known to be different", () => {
+    const cwd = "/workspace"
+    // A relative write and absolute reads: resolved, they are plainly different
+    // files, so the reads stay eligible for withholding.
+    const history = fourReadsAnd(
+      call("w1", "edit", { filePath: "notes/a.md", oldString: "a", newString: "b" }),
+      answer("w1", "edit", "edited"),
+    )
+
+    const withheld = markers(pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true, cwd }))
+
+    expect(withheld.map(marker => marker.value.sourcePath)).toEqual(["/notes/a.md", "/notes/b.md"])
+  })
+
+  test("a captured artifact is unaffected by a write to the file the output came from", () => {
+    const history: ProjectionMessage[] = [
+      user("task"),
+      call("c1", "bash", { command: "generate" }),
+      answer("c1", "bash", "captured output ".repeat(300), { externalizedAt: "/tmp/loongcode-tool-output/c1.txt" }),
+      ...readTurn("c2", "/notes/b.md", "b".repeat(4_000)),
+      call("w1", "write", { filePath: "/notes/b.md", content: "rewritten" }),
+      answer("w1", "write", "written"),
+      ...readTurn("c3", "/notes/c.md", "c".repeat(4_000)),
+      ...readTurn("c4", "/notes/d.md", "d".repeat(4_000)),
+    ]
+
+    const withheld = markers(pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true }))
+
+    // The spill still holds what was captured, while c2's path no longer does.
+    expect(withheld.map(marker => marker.value.spillPath)).toEqual(["/tmp/loongcode-tool-output/c1.txt"])
+    expect(withheld.map(marker => marker.value.sourcePath)).toEqual([undefined])
+  })
+
+  test("a route whose file cannot be identified keeps the result", () => {
+    // A `resumeOffset` whose call is not in the projection: the file behind it
+    // cannot be named, so no write can be checked against it — and a route that
+    // cannot be shown intact is not offered.
+    const orphan: ProjectionMessage = {
+      role: "tool",
+      content: [{ toolCallId: "orphan", toolName: "read", output: { type: "text", text: "page\n".repeat(500) } }],
+      affordances: { orphan: { resumeOffset: 2_001 } },
+    }
+    const history: ProjectionMessage[] = [
+      user("task"),
+      orphan,
+      ...readTurn("c2", "/notes/b.md", "b".repeat(4_000)),
+      ...readTurn("c3", "/notes/c.md", "c".repeat(4_000)),
+      ...readTurn("c4", "/notes/d.md", "d".repeat(4_000)),
+    ]
+
+    const projected = pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true })
+
+    expect(markers(projected).map(marker => marker.value.sourcePath)).toEqual(["/notes/b.md"])
+    expect(resultTexts(projected)).toContain("page\n".repeat(500))
+  })
+
+  test("following a source route returns the file's current contents, not the observation", async () => {
+    // The limitation, pinned as a test rather than described in a comment: a
+    // path route is a pointer, not a copy, so content that changed since the
+    // read cannot be reconstructed from it. Nothing may claim otherwise.
+    const dir = mkdtempSync(join(tmpdir(), "loongcode-projection-drift-"))
+    try {
+      const filePath = join(dir, "notes.md")
+      writeFileSync(filePath, "FIRST VERSION\n")
+      const history: ProjectionMessage[] = [
+        user("task"),
+        ...readTurn("c1", filePath, "FIRST VERSION\n"),
+        ...readTurn("c2", join(dir, "b.md"), "b\n"),
+        ...readTurn("c3", join(dir, "c.md"), "c\n"),
+      ]
+
+      const withheld = markers(pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true }))
+      expect(withheld).toHaveLength(1)
+      expect(withheld[0]!.value.sourcePath).toBe(filePath)
+
+      writeFileSync(filePath, "SECOND VERSION\n")
+      const read = CODING_TOOLS.get("read")
+      if (read === undefined) throw new Error("read tool is missing from the coding toolset")
+      const followed = await read.execute({ filePath }, { cwd: dir })
+      expect(followed.ok).toBe(true)
+      if (!followed.ok) throw new Error("expected the read to succeed")
+      expect(followed.data).toContain("SECOND VERSION")
+      expect(followed.data).not.toContain("FIRST VERSION")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // structural integrity
 // ---------------------------------------------------------------------------
 
 describe("a reduced projection is still a valid request", () => {
+  test("several calls in one assistant message keep their own results and routes", () => {
+    const history: ProjectionMessage[] = [
+      user("task"),
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_call", toolCallId: "c1", toolName: "read", input: { filePath: "/notes/a.md" } },
+          { type: "tool_call", toolCallId: "c2", toolName: "bash", input: { command: "generate" } },
+          { type: "tool_call", toolCallId: "c3", toolName: "read", input: { filePath: "/notes/b.md" } },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          { toolCallId: "c1", toolName: "read", output: { type: "text", text: "a".repeat(4_000) } },
+          { toolCallId: "c2", toolName: "bash", output: { type: "text", text: "spilled".repeat(500) } },
+          { toolCallId: "c3", toolName: "read", output: { type: "text", text: "b".repeat(4_000) } },
+        ],
+        affordances: { c2: { externalizedAt: "/tmp/loongcode-tool-output/c2.txt" } },
+      },
+      ...readTurn("c4", "/notes/c.md", "c".repeat(4_000)),
+      ...readTurn("c5", "/notes/d.md", "d".repeat(4_000)),
+    ]
+
+    const projected = pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true })
+
+    // Eligible in execution order — c1, c2, c3, c4, c5 — so the newest two stay.
+    const withheld = markers(projected)
+    expect(withheld.map(marker => marker.value.toolName)).toEqual(["read", "bash", "read"])
+    expect(withheld.map(marker => marker.value.sourcePath)).toEqual(["/notes/a.md", undefined, "/notes/b.md"])
+    expect(withheld[1]!.value.spillPath).toBe("/tmp/loongcode-tool-output/c2.txt")
+
+    // The message shape is untouched, and no result was handed a sibling's call.
+    const { calls, results } = pairing(projected)
+    expect(projected.map(message => message.role)).toEqual(history.map(message => message.role))
+    expect(calls).toEqual(["c1", "c2", "c3", "c4", "c5"])
+    expect(results).toEqual(calls)
+  })
+
+  test("a multi-turn history keeps its order, pairing and protected evidence", () => {
+    const history: ProjectionMessage[] = [
+      user("first task"),
+      ...readTurn("t1a", "/a.md", "A".repeat(4_000)),
+      ...readTurn("t1b", "/b.md", "B".repeat(4_000)),
+      user("second task"),
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_call", toolCallId: "t2a", toolName: "read", input: { filePath: "/c.md" } },
+          { type: "tool_call", toolCallId: "t2b", toolName: "grep", input: { pattern: "x" } },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          { toolCallId: "t2a", toolName: "read", output: { type: "text", text: "C".repeat(4_000) } },
+          { toolCallId: "t2b", toolName: "grep", output: { type: "text", text: "one match" } },
+        ],
+      },
+      user("third task"),
+      ...readTurn("t3a", "/d.md", "D".repeat(4_000)),
+      ...readTurn("t3b", "/e.md", "E".repeat(4_000)),
+      call("t4", "bash", { command: "check" }),
+      answer("t4", "bash", "observed failure", { failureEvidence: true }),
+    ]
+
+    const projected = pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true })
+
+    // Older turns are reached, and the newest eligible pair stays.
+    expect(markers(projected).map(marker => marker.value.sourcePath)).toEqual(["/a.md", "/b.md", "/c.md"])
+    // Non-recoverable output and failure evidence are untouched.
+    expect(resultTexts(projected)).toContain("one match")
+    expect(resultTexts(projected)).toContain("observed failure")
+    // Order and pairing survive across turns.
+    const { calls, results } = pairing(projected)
+    expect(projected.map(message => message.role)).toEqual(history.map(message => message.role))
+    expect(results).toEqual(calls)
+    expect(pruneOldToolOutputs(projected as ProjectionMessage[], { inputBudget: 100_000, forced: true })).toEqual(
+      projected,
+    )
+  })
+
   test("every tool call keeps its result, in order", () => {
     const history = singleTurnHistory(6)
     const projected = pruneOldToolOutputs(history, { inputBudget: 100_000, forced: true })

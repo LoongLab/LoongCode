@@ -115,13 +115,7 @@ export class Compactor {
     // The compactable region is everything UP TO AND INCLUDING the last
     // user message; the trailing in-progress turn (assistant/tool messages
     // after it) is never compacted — the model needs it to continue.
-    let lastUserIdx = -1
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") {
-        lastUserIdx = i
-        break
-      }
-    }
+    const lastUserIdx = lastUserIndexIn(messages)
     if (lastUserIdx < 0 || lastUserIdx === messages.length - 1) {
       return { status: "no-progress", reason: "no-compactable-region" }
     }
@@ -217,6 +211,20 @@ export class Compactor {
     const inputBudget = this.budgets().inputBudget
     return Math.max(PRESERVE_MIN_TOKENS, Math.min(PRESERVE_MAX_TOKENS, Math.floor(inputBudget * PRESERVE_BUDGET_RATIO)))
   }
+}
+
+/**
+ * Index of the last user message, or -1 when the history holds none.
+ *
+ * Exported because the run loop needs the same boundary to answer a different
+ * question — whether another attempt could see anything new — and a second,
+ * independently written scan is exactly how the two answers drift apart.
+ */
+export function lastUserIndexIn(messages: readonly SessionMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === "user") return i
+  }
+  return -1
 }
 
 function selectPreservedTail(messages: ModelMessage[], budgetTokens: number): number {
