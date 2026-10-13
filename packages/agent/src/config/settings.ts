@@ -10,8 +10,6 @@ export type WindowsShell = "cmd" | "powershell"
 /** Runtime-tunable settings: global file merged under project
  *  file (project wins), nested objects merge recursively. */
 export interface LoongCodeSettings {
-  /** Default active model id (ModelManager still owns credentials). */
-  model?: string
   autoCompact?: {
     /** Proactive compaction before the input budget is exhausted. Default on. */
     enabled: boolean
@@ -68,10 +66,9 @@ function validateSettings(input: unknown, path: string): Partial<LoongCodeSettin
   }
   const record = input as Record<string, unknown>
   const out: Partial<LoongCodeSettings> = {}
-  if (record.model !== undefined) {
-    if (typeof record.model !== "string") throw new Error(`invalid settings file ${path}: model must be a string`)
-    out.model = record.model
-  }
+  // Unknown keys are ignored rather than rejected, which is what lets a file
+  // written by an older version keep loading: a stale `model` key, for example,
+  // is simply not read. Only the keys below have any meaning.
   if (record.theme !== undefined) {
     if (record.theme !== "dark" && record.theme !== "light") {
       throw new Error(`invalid settings file ${path}: theme must be "dark" or "light"`)

@@ -103,7 +103,7 @@ describe("commands (AC12)", () => {
   test("/model is a single command with no argument syntax", () => {
     const model = findCommand("model")
     expect(model).toBeDefined()
-    expect(model!.description).toBe("Select or add a model")
+    expect(model!.description).toBe("Select, add, edit, or remove a model")
     expect(model!.argumentHint).toBeUndefined()
     expect(model!.argumentPlaceholder).toBeUndefined()
   })
@@ -137,7 +137,7 @@ describe("commands (AC12)", () => {
     const ctx = { notify: (text: string) => { notices.push(text) } } as unknown as CommandContext
     findCommand("help")!.execute(ctx, "")
     const help = notices.join("\n")
-    expect(help).toContain("/model — Select or add a model")
+    expect(help).toContain("/model — Select, add, edit, or remove a model")
     for (const stale of ["/model add", "/model edit", "/model remove", "Configure models", "[add |"]) {
       expect(help).not.toContain(stale)
     }
@@ -254,6 +254,8 @@ interface ModelHarness {
   calls: {
     configured: ModelConfig[]
     activated: string[]
+    edited: string[]
+    removed: string[]
   }
   lastPickItems: Array<{ value: string; label: string; description?: string }>
   /** How many times the command asked the application to run setup. */
@@ -274,11 +276,17 @@ function modelHarness(options: {
   failActivate?: Error
   /** What the application's setup sequence reports back. */
   setupResult?: boolean
+  /** What the application reports for the next edit. */
+  editResult?: boolean
+  /** What the application's removal does: fail, or resolve. */
+  failRemove?: Error
+  /** Whether the application says a run or compaction owns the session. */
+  blocked?: "running" | "compacting"
 }): ModelHarness {
   const notices: ModelHarness["notices"] = []
   const asks: ModelHarness["asks"] = []
   const picks: PickCall[] = []
-  const calls: ModelHarness["calls"] = { configured: [], activated: [] }
+  const calls: ModelHarness["calls"] = { configured: [], activated: [], edited: [], removed: [] }
   const askResults = [...(options.askResults ?? [])]
   const models = options.models ?? []
   const byId = new Map(models.map(m => [m.id, m]))
@@ -304,6 +312,7 @@ function modelHarness(options: {
         calls.activated.push(id)
       },
     }),
+    modelChangeBlocked: () => options.blocked,
     notify: (text: string, isError?: boolean) => {
       notices.push({ text, isError: isError === true })
     },
@@ -330,6 +339,14 @@ function modelHarness(options: {
       setupRuns += 1
       return options.setupResult ?? true
     },
+    editModel: async (id: string) => {
+      calls.edited.push(id)
+      return options.editResult ?? true
+    },
+    removeModel: async (id: string) => {
+      if (options.failRemove) throw options.failRemove
+      calls.removed.push(id)
+    },
   } as unknown as CommandContext
 
   return { ctx, notices, asks, picks, calls, lastPickItems, get setupRuns() { return setupRuns } }
@@ -340,32 +357,17 @@ function byLabel(call: PickCall, label: string): string | null {
   return call.items.find(item => item.label === label)?.value ?? null
 }
 
-/**
- * A pick handler covering the `/model` picker and the add wizard's protocol and
- * commit steps. `protocol` selects the protocol item; `limits` chooses
- * `Configure limits…` at the commit step instead of the primary action.
- */
-function wizard(
-  opts: { protocol?: "openai" | "anthropic"; limits?: boolean } = {},
-): (call: PickCall) => string | null {
-  return call => {
-    if (call.title === "Model") return byLabel(call, "Add model…")
-    if (call.title === "Protocol") {
-      return byLabel(call, opts.protocol === "anthropic" ? "Anthropic" : "OpenAI-compatible")
-    }
-    if (call.title.startsWith("Add ")) {
-      if (opts.limits) return byLabel(call, "Configure limits…")
-      return byLabel(call, "Add model")
-    }
-    return null
-  }
-}
-
 describe("/model selection", () => {
-  test("lists configured models, marks the active one, and offers only Add model…", async () => {
+  test("lists configured models, marks the active one, and offers the model actions", async () => {
     const h = modelHarness({ models: [{ id: "m1" }, { id: "m2" }], active: "m1" })
     await findCommand("model")!.execute(h.ctx, "")
-    expect(h.lastPickItems.map(i => i.label)).toEqual(["m1", "m2", "Add model…"])
+    expect(h.lastPickItems.map(i => i.label)).toEqual([
+      "m1",
+      "m2",
+      "Add model…",
+      "Edit model…",
+      "Remove model…",
+    ])
     expect(h.lastPickItems[0]!.description).toBe("active")
     expect(h.lastPickItems[1]!.description).toBeUndefined()
     expect(h.lastPickItems.some(i => i.label === "Configure models…")).toBe(false)
@@ -421,5 +423,124 @@ describe("/model add", () => {
     await findCommand("model")!.execute(h.ctx, "")
     expect(h.setupRuns).toBe(1)
     expect(h.calls.activated).toEqual([])
+  })
+})
+
+describe("/model edit", () => {
+  test("choosing Edit model… asks which model and hands it to the application", async () => {
+    const h = modelHarness({
+      models: [{ id: "m1" }, { id: "m2" }],
+      active: "m2",
+      pick: call =>
+        call.title === "Model" ? byLabel(call, "Edit model…") : call.title === "Edit model" ? "m1" : null,
+    })
+    await findCommand("model")!.execute(h.ctx, "")
+
+    expect(h.calls.edited).toEqual(["m1"])
+    // The selection screen marks the active model, like the main picker does.
+    const selection = h.picks.find(call => call.title === "Edit model")!
+    expect(selection.items.map(item => item.label)).toEqual(["m1", "m2"])
+    expect(selection.items[1]!.description).toBe("active")
+  })
+
+  test("escaping the model selection edits nothing", async () => {
+    const h = modelHarness({
+      models: [{ id: "m1" }],
+      pick: call => (call.title === "Model" ? byLabel(call, "Edit model…") : null),
+    })
+    await findCommand("model")!.execute(h.ctx, "")
+    expect(h.calls.edited).toEqual([])
+    expect(h.notices).toEqual([])
+  })
+})
+
+describe("/model remove", () => {
+  /** The full removal path: action row, model selection, confirmation. The
+   *  confirmation answers by label, and its value is what the command acts on. */
+  const removeFlow = (confirmation: string | null) => (call: PickCall): string | null => {
+    if (call.title === "Model") return byLabel(call, "Remove model…")
+    if (call.title === "Remove model") return "m1"
+    if (call.title === 'Remove "m1"') return confirmation === null ? null : byLabel(call, confirmation)
+    return null
+  }
+
+  test("the confirmation names the model, Cancel is highlighted, and success follows the removal", async () => {
+    const h = modelHarness({ models: [{ id: "m1" }], active: "m1", pick: removeFlow('Remove "m1"') })
+    await findCommand("model")!.execute(h.ctx, "")
+
+    const confirmation = h.picks.find(call => call.title === 'Remove "m1"')!
+    expect(confirmation.items.map(item => item.label)).toEqual(['Remove "m1"', "Cancel"])
+    expect(confirmation.selectedValue).toBe("cancel")
+    expect(h.calls.removed).toEqual(["m1"])
+    // The notice states a fact about the store, so it comes after the store
+    // changed — never before.
+    expect(h.notices.at(-1)).toEqual({ text: 'removed model "m1"', isError: false })
+  })
+
+  test("cancelling the confirmation removes nothing and says nothing", async () => {
+    const h = modelHarness({ models: [{ id: "m1" }], pick: removeFlow("cancel") })
+    await findCommand("model")!.execute(h.ctx, "")
+    expect(h.calls.removed).toEqual([])
+    expect(h.notices).toEqual([])
+  })
+
+  test("a persistence failure is reported and never announced as success", async () => {
+    const h = modelHarness({
+      models: [{ id: "m1" }],
+      pick: removeFlow('Remove "m1"'),
+      failRemove: new Error("disk is full"),
+    })
+    await findCommand("model")!.execute(h.ctx, "")
+
+    expect(h.notices.at(-1)).toEqual({ text: "cannot remove model: disk is full", isError: true })
+    expect(h.notices.some(notice => notice.text.startsWith("removed model"))).toBe(false)
+  })
+})
+
+describe("model configuration changes are refused while the session is busy", () => {
+  const RUNNING_NOTICE = "A task is running — wait for it to finish before changing models."
+
+  for (const action of ["Add model…", "Edit model…", "Remove model…"]) {
+    test(`${action} is refused while a task runs, with the approved notice`, async () => {
+      const h = modelHarness({
+        models: [{ id: "m1" }],
+        blocked: "running",
+        pick: call => (call.title === "Model" ? byLabel(call, action) : null),
+      })
+      await findCommand("model")!.execute(h.ctx, "")
+
+      expect(h.notices.at(-1)).toEqual({ text: RUNNING_NOTICE, isError: true })
+      // Refused before the action's own screens open, so no half-started flow
+      // is left behind — and nothing was changed.
+      expect(h.picks.some(call => call.title !== "Model")).toBe(false)
+      expect(h.setupRuns).toBe(0)
+      expect(h.calls.edited).toEqual([])
+      expect(h.calls.removed).toEqual([])
+    })
+  }
+
+  test("a compaction is named as the reason", async () => {
+    const h = modelHarness({
+      models: [{ id: "m1" }],
+      blocked: "compacting",
+      pick: call => (call.title === "Model" ? byLabel(call, "Remove model…") : null),
+    })
+    await findCommand("model")!.execute(h.ctx, "")
+
+    expect(h.notices.at(-1)!.text).toContain("A compaction is in progress")
+    expect(h.calls.removed).toEqual([])
+  })
+
+  test("selecting a model is not a configuration change and stays available", async () => {
+    const h = modelHarness({
+      models: [{ id: "m1" }, { id: "m2" }],
+      active: "m1",
+      blocked: "running",
+      pick: call => (call.title === "Model" ? "m2" : null),
+    })
+    await findCommand("model")!.execute(h.ctx, "")
+
+    expect(h.calls.activated).toEqual(["m2"])
+    expect(h.notices.at(-1)).toEqual({ text: "active model: m2", isError: false })
   })
 })

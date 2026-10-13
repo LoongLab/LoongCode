@@ -25,9 +25,16 @@ On first launch no model is active, and LoongCode says so: it opens the setup
 flow (protocol `openai` or `anthropic`, endpoint, model name, API key) before
 the workspace appears, and the normal interface is not reachable until a model
 is active. `/model` is that same flow — it lists the models you have configured
-and offers `Add model…` for a new one. Context and output limits are defaulted,
-and only exposed under an optional *Configure limits…* step. Cancelling setup
-exits; a task you had already typed is not run and is not saved.
+and offers `Add model…`, `Edit model…` and `Remove model…`. Context and output
+limits are defaulted to 128000 and 8192, and changeable in the flow's optional
+*Configure limits…* step. Cancelling setup exits; a task you had already typed
+is not run and is not saved.
+
+Editing a model reuses the flow, seeded from what is saved: the stored API key
+is never displayed — you choose to keep it or enter a replacement — and the
+change is saved only after a connection test succeeds. Model changes are refused
+while a task or a compaction is running, and removing the active model reopens
+setup.
 
 ## Scripting
 
