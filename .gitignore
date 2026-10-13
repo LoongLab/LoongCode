@@ -58,6 +58,8 @@ CLAUDE.local.md
 packages/cli/dist/
 packages/cli/CHANGELOG.md
 packages/cli/LICENSE
+packages/cli/NOTICE
+packages/cli/THIRD_PARTY_NOTICES.md
 
 # Internal files that must never be committed.
 # Word documents and internal tooling scripts are not part of the product;

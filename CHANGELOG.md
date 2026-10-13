@@ -4,6 +4,30 @@ All notable changes to LoongCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-14
+
+A licensing and packaging release. The published package now carries the
+third-party notices that the code has always required — the bundled TUI is
+derived from MIT-licensed source, and the tarball previously shipped only the
+Apache license. It also updates the package README to lead with the product's
+context-management positioning.
+
+### Added
+
+- **Third-party notices in the published package.** `THIRD_PARTY_NOTICES.md`
+  inventories the derived source and bundled dependencies with their license
+  texts, and `NOTICE` scopes which portions of the project are original
+  (Apache-2.0) versus derived (MIT). Both are now included in the
+  `@loonglab/loongcode-cli` tarball alongside `LICENSE` and `CHANGELOG.md`, so a
+  redistributed copy carries the notices it needs.
+
+### Changed
+
+- `@loongcode/tui` declares its `license` field (MIT); it was previously absent
+  even though the package is derived from MIT-licensed source.
+- The package README leads with the context-management positioning and gains a
+  "Context that lasts" section describing the three context layers.
+
 ## [0.1.3] - 2026-10-13
 
 A model-configuration and context-management release. The setup flow sets a

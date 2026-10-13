@@ -1,0 +1,17 @@
+LoongCode
+Copyright 2025-2026 LoongLab
+
+The LoongCode project as a whole is licensed under the Apache License 2.0
+(see LICENSE). This NOTICE scopes which portions are which:
+
+- Original LoongCode work — the agent loop, model protocols, context
+  management, the CLI, and the remainder of the codebase — is licensed
+  under the Apache License 2.0.
+
+- Portions of packages/tui are derived from third-party source and remain
+  under their upstream MIT licenses. The upstream authors, affected files,
+  and full license texts are listed in THIRD_PARTY_NOTICES.md. Those
+  portions are not relicensed by LoongLab.
+
+Third-party material retains its own copyright and license. See
+THIRD_PARTY_NOTICES.md for the complete inventory.

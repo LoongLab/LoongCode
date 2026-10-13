@@ -354,4 +354,6 @@ something interesting with it, we'd love to hear about it.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE). Third-party material retains its own
+licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the inventory
+and the derived portions under MIT.

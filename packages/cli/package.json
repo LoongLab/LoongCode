@@ -1,6 +1,6 @@
 {
   "name": "@loonglab/loongcode-cli",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "LoongCode — a terminal coding agent that works directly in your repository",
   "license": "Apache-2.0",
   "repository": {
@@ -22,10 +22,12 @@
     "dist",
     "README.md",
     "LICENSE",
+    "NOTICE",
+    "THIRD_PARTY_NOTICES.md",
     "CHANGELOG.md"
   ],
   "scripts": {
-    "prepack": "cd ../.. && bun run build:cli && cp CHANGELOG.md packages/cli/CHANGELOG.md && cp LICENSE packages/cli/LICENSE"
+    "prepack": "cd ../.. && bun run build:cli && cp CHANGELOG.md packages/cli/CHANGELOG.md && cp LICENSE packages/cli/LICENSE && cp NOTICE packages/cli/NOTICE && cp THIRD_PARTY_NOTICES.md packages/cli/THIRD_PARTY_NOTICES.md"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "4.0.58",

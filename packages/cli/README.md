@@ -1,9 +1,17 @@
 # LoongCode
 
+### The coding agent that won't burn your context window.
+
 An opinionated coding agent that works directly in your repository. Give it a
 software task — fix a failing test, refactor a module, track down a bug — and
 it explores the code, makes changes, runs commands, and verifies its own work
 in an interactive terminal UI.
+
+Running a long task is where coding agents fall apart: the context window fills
+with old file reads and command output, the agent starts forgetting what it did,
+and every request costs more. LoongCode treats context as a budget to defend, not
+a bucket to fill — so long sessions stay sharp, coherent, and affordable. See
+[Context that lasts](#context-that-lasts).
 
 ## Install
 
@@ -35,6 +43,26 @@ is never displayed — you choose to keep it or enter a replacement — and the
 change is saved only after a connection test succeeds. Model changes are refused
 while a task or a compaction is running, and removing the active model reopens
 setup.
+
+## Context that lasts
+
+Context is managed at every boundary, each layer doing the cheapest thing that
+works:
+
+- **Cap at the source** — oversized tool output is capped as it is produced,
+  spilled to a file with a short preview, so one huge result cannot flood the
+  window.
+- **Reduce at request time** — only when a request would exceed its budget, older
+  tool results are replaced by compact markers, oldest first, and only as many as
+  it takes to fit. The current turn is protected.
+- **Summarize durably** — when history truly overflows, older turns are
+  summarized into one message with a recent tail preserved, so the session
+  continues instead of ending.
+
+A withheld result is not a dead end: its marker names where the full output still
+lives, so the agent can read it back. Failure evidence and errors are never
+withheld, and this reduction only changes the request that is sent — the saved
+session keeps every result.
 
 ## Scripting
 
@@ -82,3 +110,5 @@ To run them in CMD instead, add `shell` to `settings.json`:
   `%ComSpec%`.
 
 See the repository README for the full product documentation.
+LoongCode is licensed under Apache-2.0; third-party material retains its own
+licenses — see `THIRD_PARTY_NOTICES.md` in this package.
