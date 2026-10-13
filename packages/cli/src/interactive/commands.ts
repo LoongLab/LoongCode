@@ -41,11 +41,30 @@ export interface CommandContext {
   manageSessions(): Promise<void>
   /**
    * Runs the model setup sequence — protocol, service address, API key, model
-   * identifier, a real model call, then an explicit save. Resolves true when a
-   * model was saved and activated. The application owns the whole interaction;
-   * this is the command's only hook into it.
+   * identifier, an unnumbered limits sub-step, a real model call, then an
+   * explicit save. Resolves true when a model was saved and activated. The
+   * application owns the whole interaction; this is the command's only hook
+   * into it.
    */
   configureModel(): Promise<boolean>
+  /**
+   * Runs the same sequence against a configured model, seeded from what is
+   * saved and saved through the manager's update. Resolves true when the
+   * changes were persisted. The stored API key is never displayed.
+   */
+  editModel(id: string): Promise<boolean>
+  /**
+   * Removes a configured model and, when it was the active one, re-opens the
+   * setup gate. Rejects when the change could not be persisted, so the caller
+   * never reports a success that did not happen.
+   */
+  removeModel(id: string): Promise<void>
+  /**
+   * Why model configuration cannot change right now, if it cannot: a run or a
+   * compaction owns the session, and the setup screens would take the workspace
+   * view out from under it. Selecting a model does not need this.
+   */
+  modelChangeBlocked(): "running" | "compacting" | undefined
   /** Runs the model-based context compaction immediately. */
   compact(): Promise<CompactResult>
   /**
@@ -86,14 +105,52 @@ export interface Command {
 // store (ModelManager) is the source of truth for the configured models; these
 // helpers only drive the picker/prompt interaction.
 
-/** Picker action value for the `Add model…` row. Control-character prefixed so
- *  it can never collide with a user-chosen model id. */
+/** Picker action values. Control-character prefixed so they can never collide
+ *  with a user-chosen model id. */
 const MODEL_ADD = "\u0000model:add"
+const MODEL_EDIT = "\u0000model:edit"
+const MODEL_REMOVE = "\u0000model:remove"
 
 /** A user-facing message derived from a thrown value. Never contains secrets:
  *  ModelError messages carry no API key (see @loongcode/model). */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Refuses a model change while a run or a compaction owns the session.
+ *
+ * The setup screens take the workspace view, so a change started mid-run would
+ * hide work in progress; a removal mid-run would leave the run holding a model
+ * the store no longer has. True means the caller must stop.
+ */
+function refuseWhileModelChangeBlocked(ctx: CommandContext): boolean {
+  const blocked = ctx.modelChangeBlocked()
+  if (blocked === undefined) return false
+  ctx.notify(
+    blocked === "running"
+      ? "A task is running — wait for it to finish before changing models."
+      : "A compaction is in progress — wait for it to finish before changing models.",
+    true,
+  )
+  return true
+}
+
+/** Asks which configured model an action applies to. */
+function pickModel(
+  ctx: CommandContext,
+  title: string,
+  models: readonly import("@loongcode/model").Model[],
+  active: string | undefined,
+): Promise<string | null> {
+  return ctx.pick(
+    title,
+    models.map(model => ({
+      value: model.id,
+      label: model.id,
+      ...(model.id === active ? { description: "active" } : {}),
+    })),
+  )
 }
 
 export const COMMANDS: Command[] = [
@@ -110,7 +167,7 @@ export const COMMANDS: Command[] = [
   },
   {
     name: "model",
-    description: "Select or add a model",
+    description: "Select, add, edit, or remove a model",
     async execute(ctx, args) {
       // `/model` takes no arguments. The former `add`/`edit`/`remove` forms and
       // direct model-id activation are gone; any argument is rejected rather
@@ -124,9 +181,10 @@ export const COMMANDS: Command[] = [
       const models = (await agent.modelManager()).list()
       const active = (await agent.currentModel())?.id
 
-      // A single picker covers both capabilities: every configured model, plus
-      // `Add model…`. With no configured models it collapses to the Add row,
-      // so the setup sequence is always reachable.
+      // One picker stays the whole model surface: every configured model, then
+      // the actions that configure them. With nothing configured it collapses
+      // to the Add row, so the setup sequence is always reachable — and the
+      // rows that need a model to act on are not offered at all.
       const chosen = await ctx.pick("Model", [
         ...models.map(m => ({
           value: m.id,
@@ -134,13 +192,52 @@ export const COMMANDS: Command[] = [
           description: m.id === active ? "active" : undefined,
         })),
         { value: MODEL_ADD, label: "Add model…" },
+        ...(models.length === 0
+          ? []
+          : [
+              { value: MODEL_EDIT, label: "Edit model…" },
+              { value: MODEL_REMOVE, label: "Remove model…" },
+            ]),
       ])
       if (chosen === null) return
       if (chosen === MODEL_ADD) {
+        if (refuseWhileModelChangeBlocked(ctx)) return
         // The application runs the one configuration sequence there is — the
         // same one first-run onboarding uses, which saves only after a real
         // model call has succeeded and been confirmed.
         await ctx.configureModel()
+        return
+      }
+      if (chosen === MODEL_EDIT) {
+        if (refuseWhileModelChangeBlocked(ctx)) return
+        const id = await pickModel(ctx, "Edit model", models, active)
+        if (id === null) return
+        await ctx.editModel(id)
+        return
+      }
+      if (chosen === MODEL_REMOVE) {
+        if (refuseWhileModelChangeBlocked(ctx)) return
+        const id = await pickModel(ctx, "Remove model", models, active)
+        if (id === null) return
+        // The confirmation names the model, and Cancel is the highlighted
+        // choice: this is the one action in the picker that destroys something.
+        const confirmed = await ctx.pick(
+          `Remove "${id}"`,
+          [
+            { value: `remove`, label: `Remove "${id}"` },
+            { value: "cancel", label: "Cancel" },
+          ],
+          { selectedValue: "cancel" },
+        )
+        if (confirmed !== "remove") return
+        try {
+          // Awaited: the notice states a fact about the store, so it comes
+          // after the store has changed — never before.
+          await ctx.removeModel(id)
+          ctx.notify(`removed model "${id}"`)
+        } catch (error) {
+          ctx.notify(`cannot remove model: ${errorMessage(error)}`, true)
+        }
         return
       }
       try {

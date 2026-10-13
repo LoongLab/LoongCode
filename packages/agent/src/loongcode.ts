@@ -149,12 +149,11 @@ export class LoongCode {
     manager.activate(id)
   }
 
-  /** Removes a configured model (persists). */
-  removeModel(id: string): void {
-    void (async () => {
-      const manager = await ModelManager.load()
-      manager.remove(id)
-    })()
+  /** Removes a configured model (persists). Rejects when it cannot: a caller
+   *  that must not report success before the change is durable awaits this. */
+  async removeModel(id: string): Promise<void> {
+    const manager = await ModelManager.load()
+    manager.remove(id)
   }
 
   /** Adds and activates a model configuration (persists). */
@@ -162,6 +161,14 @@ export class LoongCode {
     const manager = await ModelManager.load()
     manager.add(config)
     manager.activate(config.id)
+  }
+
+  /** Replaces a configured model's configuration (persists). The id is the
+   *  model's identity, so it must already exist — and it stays active if it
+   *  was, because the manager owns that pointer rather than this door. */
+  async updateModel(config: import("@loongcode/model").ModelConfig): Promise<void> {
+    const manager = await ModelManager.load()
+    manager.update(config)
   }
 
   /** Summaries of every persisted session (for resume/tree UIs). */

@@ -41,7 +41,31 @@ describe("settings (AC10)", () => {
       expect(loaded.settings.autoCompact?.thresholdPct).toBe(50)
       // …while unset global sub-keys carry through (deep merge).
       expect(loaded.settings.autoCompact?.enabled).toBe(true)
-      expect(loaded.settings.model).toBe("mine")
+      // `model` is a key an older version wrote and nothing ever read; it is
+      // ignored rather than merged, which is what keeps such a file loading.
+      expect("model" in loaded.settings).toBe(false)
+    } finally {
+      if (previous === undefined) delete process.env.LOONGCODE_CONFIG_DIR
+      else process.env.LOONGCODE_CONFIG_DIR = previous
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("a stale model key is ignored, not rejected — even a malformed one", () => {
+    // The key existed in earlier releases with no consumer, and its validation
+    // could fail a load that reached the run path. Removing the field must not
+    // strand files that still carry it, so an unknown key stays inert.
+    const dir = tempDir()
+    const previous = process.env.LOONGCODE_CONFIG_DIR
+    process.env.LOONGCODE_CONFIG_DIR = dir
+    try {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(globalSettingsPath(), JSON.stringify({ model: 42, theme: "light" }))
+
+      const loaded = loadSettings(dir)
+
+      expect(loaded.settings.theme).toBe("light")
+      expect("model" in loaded.settings).toBe(false)
     } finally {
       if (previous === undefined) delete process.env.LOONGCODE_CONFIG_DIR
       else process.env.LOONGCODE_CONFIG_DIR = previous

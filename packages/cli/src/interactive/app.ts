@@ -260,13 +260,16 @@ const SETUP_ENDPOINTS: Record<ModelProtocol, string> = {
 }
 
 /**
- * LoongCode-managed limit defaults. The limits are not part of the approved
- * setup sequence — the runtime needs *a* valid pair, and these are the values
- * the previous configuration flow used, so an existing installation's models
- * and a new one's are shaped identically.
+ * The limits a new model starts with, offered at the limits sub-step as
+ * `Continue with defaults (128000 / 8192)`.
+ *
+ * They are the values the first configuration flow used, so a model created
+ * without touching the sub-step is shaped exactly as before. Limits live in
+ * each saved configuration, so an existing installation's models are unaffected
+ * either way.
  */
-const SETUP_CONTEXT_WINDOW = 128000
-const SETUP_MAX_OUTPUT_TOKENS = 8192
+const SETUP_DEFAULT_CONTEXT_WINDOW = 128000
+const SETUP_DEFAULT_MAX_OUTPUT_TOKENS = 8192
 
 /**
  * How long the connection test may take before it is reported as timed out.
@@ -304,6 +307,8 @@ interface SetupDraft {
 	endpoint: string
 	apiKey: string
 	model: string
+	contextWindow: number
+	maxOutputTokens: number
 }
 
 /** Where the sequence is. Back moves to the previous step; the values stay. */
@@ -312,11 +317,59 @@ type SetupStep =
 	| "endpoint"
 	| "apiKey"
 	| "model"
+	/** The limits sub-step: unnumbered, so the sequence the user walks is the
+	 *  numbered five it always was. */
+	| "limits"
 	| "test"
 	| "tested"
 	| "failed"
 	| "saved"
 	| "exit"
+
+/**
+ * One run of the setup sequence.
+ *
+ * Creation and editing differ in exactly three places — the values the fields
+ * start with, who persists the verified result, and what the commit choice
+ * says — and nowhere else. Everything between them (validation, the connection
+ * test, cancellation) is the same sequence, which is the point.
+ */
+interface SetupRunOptions {
+	/** The values every field starts from. */
+	readonly draft: SetupDraft
+	/** Persists the verified draft. Resolves `null` on success, `"cancelled"`
+	 *  when the user backed out of an id conflict, or the failure message. */
+	readonly commit: (draft: SetupDraft) => Promise<string | null>
+	/** The commit choice on the tested screen. */
+	readonly saveLabel: string
+	/** The first screen's heading, for a run that is about a known model. */
+	readonly heading?: string
+	/** Text before the values in the limits sub-step's "leave them alone"
+	 *  choice: creating continues with the defaults, editing keeps what the
+	 *  model already has. */
+	readonly keepLimitsLabel: string
+	/** Offer the key step as keep-or-replace instead of prompting, for a draft
+	 *  that already carries a key. */
+	readonly keepExistingKey?: boolean
+	/** The run is an edit started from the workspace, so the first step's escape
+	 *  cancels back to it rather than offering to leave LoongCode — a user who
+	 *  opened an edit has somewhere to return to. */
+	readonly cancelEdit?: boolean
+}
+
+/** The sequence's starting values for an existing configuration: every saved
+ *  field, including the key — which the key step never displays and only
+ *  replaces on request. */
+function draftFromConfig(config: ModelConfig): SetupDraft {
+	return {
+		protocol: config.protocol,
+		endpoint: config.endpoint,
+		apiKey: config.apiKey,
+		model: config.model,
+		contextWindow: config.contextWindow,
+		maxOutputTokens: config.maxOutputTokens,
+	}
+}
 
 type SetupFieldName = "endpoint" | "apiKey" | "model"
 
@@ -371,10 +424,10 @@ const SETUP_FIELDS: Record<SetupFieldName, SetupFieldSpec> = {
 		step: "Step 4/5",
 		heading: "Model ID",
 		note: "Enter the model identifier supported by the selected model service.",
-		hints: "Enter Test Model · Esc Back",
+		hints: "Enter Next · Esc Back",
 		secret: false,
 		back: "apiKey",
-		next: "test",
+		next: "limits",
 		validate: value => (value.length === 0 ? "Enter the model identifier." : null),
 	},
 }
@@ -814,16 +867,69 @@ export class LoongCodeTui {
 				// workspace command shows the same sequence the mandatory gate
 				// does, so no path can save a model that was never called.
 				if (this.phase === "setup") {
-					return (await this.runSetupSequence()) === "saved"
+					return (await this.runSetupSequence(this.creationRun())) === "saved"
 				}
 				this.enterSetupPhase(null)
-				const outcome = await this.runSetupSequence()
+				const outcome = await this.runSetupSequence(this.creationRun())
 				// Back to the workspace through the same fresh check that governs
 				// entry, so a save that did not take cannot re-open it on a
 				// reading taken before the attempt.
 				void this.runSetup()
 				return outcome === "saved"
 			},
+			editModel: async (id: string): Promise<boolean> => {
+				const config = (await this.commandContext.agent().modelManager()).config(id)
+				if (config === undefined) {
+					// The picker listed it a moment ago; a store that no longer
+					// has it is reported, never silently re-created.
+					this.chat.addChild(errorNotice(`model "${id}" is not configured`))
+					this.tui.requestRender()
+					return false
+				}
+				const run: SetupRunOptions = {
+					draft: draftFromConfig(config),
+					// The id is the model's identity: an edit can change every
+					// field except which entry it is, so the update goes through
+					// the manager's replacement rather than a remove and an add.
+					commit: async draft => {
+						try {
+							await this.commandContext.agent().updateModel({
+								...this.setupConfig(draft),
+								id: config.id,
+								name: config.id,
+							})
+							return null
+						} catch (error) {
+							return error instanceof Error ? error.message : String(error)
+						}
+					},
+					saveLabel: "Save changes",
+					heading: `Edit "${config.id}"`,
+					keepLimitsLabel: "Keep current limits",
+					keepExistingKey: true,
+					cancelEdit: true,
+				}
+				if (this.phase === "setup") {
+					return (await this.runSetupSequence(run)) === "saved"
+				}
+				this.enterSetupPhase(null)
+				const outcome = await this.runSetupSequence(run)
+				void this.runSetup()
+				return outcome === "saved"
+			},
+			removeModel: async (id: string): Promise<void> => {
+				// The manager owns the active pointer: removing the active model
+				// leaves none, so the gate reopens now rather than at the next
+				// task submission. A failure to persist propagates to the caller,
+				// which reports it instead of a success.
+				await this.commandContext.agent().removeModel(id)
+				if ((await modelReadiness(this.options.agent)).kind !== "ready") {
+					this.enterSetupPhase(null)
+					void this.runSetup()
+				}
+			},
+			modelChangeBlocked: (): "running" | "compacting" | undefined =>
+				this.compacting ? "compacting" : this.running ? "running" : undefined,
 			submitTask: async text => {
 				await this.submit(text)
 			},
@@ -1195,7 +1301,7 @@ export class LoongCodeTui {
 					// The sequence owns the screen until it saves or the user
 					// leaves. A save does not open the gate by itself: the loop
 					// re-reads, so entry is still decided by a fresh check.
-					const outcome = await this.runSetupSequence()
+					const outcome = await this.runSetupSequence(this.creationRun())
 					if (outcome === "exited") {
 						this.exitFromSetup()
 						return
@@ -1231,43 +1337,46 @@ export class LoongCodeTui {
 
 	/**
 	 * The approved setup sequence: protocol, service address, API key, model
-	 * identifier, a real model call, then an explicit save.
+	 * identifier, an unnumbered limits sub-step, a real model call, then an
+	 * explicit save.
 	 *
 	 * The collected values live in one record that every step reads and writes,
 	 * so Back and a retry return the user to what they had typed. Nothing is
 	 * persisted until a call has actually succeeded AND the user has confirmed
 	 * it — and the save action exists only on the success screen, so there is no
 	 * route from a failed, cancelled or timed-out test to saving.
+	 *
+	 * What the run is *for* — creating a model or editing one — arrives in
+	 * {@link SetupRunOptions}; the steps themselves are identical either way.
 	 */
-	private async runSetupSequence(): Promise<"saved" | "exited"> {
-		const first = SETUP_PROTOCOLS[0]!.value
-		const draft: SetupDraft = {
-			protocol: first,
-			endpoint: SETUP_ENDPOINTS[first],
-			apiKey: "",
-			model: "",
-		}
+	private async runSetupSequence(options: SetupRunOptions): Promise<"saved" | "exited"> {
+		const draft = options.draft
 		let step: SetupStep = "protocol"
 
 		for (;;) {
 			switch (step) {
 				case "protocol":
-					step = await this.setupProtocolStep(draft)
+					step = await this.setupProtocolStep(draft, options)
 					break
 				case "endpoint":
 					step = await this.setupFieldStep("endpoint", draft)
 					break
 				case "apiKey":
-					step = await this.setupFieldStep("apiKey", draft)
+					step = options.keepExistingKey === true
+						? await this.setupKeyStep(draft)
+						: await this.setupFieldStep("apiKey", draft)
 					break
 				case "model":
 					step = await this.setupFieldStep("model", draft)
+					break
+				case "limits":
+					step = await this.setupLimitsStep(draft, options)
 					break
 				case "test":
 					step = await this.setupTestStep(draft)
 					break
 				case "tested":
-					step = await this.setupTestedStep(draft)
+					step = await this.setupTestedStep(draft, options)
 					break
 				case "failed":
 					step = await this.setupFailedStep()
@@ -1280,23 +1389,51 @@ export class LoongCodeTui {
 		}
 	}
 
-	/** Step 1 — the protocol. Esc here is the exit question, not a Back. */
-	private async setupProtocolStep(draft: SetupDraft): Promise<SetupStep> {
+	/** The options a run that creates a new model uses. */
+	private creationRun(): SetupRunOptions {
+		const first = SETUP_PROTOCOLS[0]!.value
+		return {
+			draft: {
+				protocol: first,
+				endpoint: SETUP_ENDPOINTS[first],
+				apiKey: "",
+				model: "",
+				contextWindow: SETUP_DEFAULT_CONTEXT_WINDOW,
+				maxOutputTokens: SETUP_DEFAULT_MAX_OUTPUT_TOKENS,
+			},
+			commit: draft => this.saveSetupConfig(draft),
+			saveLabel: "Save and Enter Workspace",
+			keepLimitsLabel: "Continue with defaults",
+		}
+	}
+
+	/** Step 1 — the protocol. Esc here is the leave question, not a Back. */
+	private async setupProtocolStep(draft: SetupDraft, options: SetupRunOptions): Promise<SetupStep> {
+		const editing = options.cancelEdit === true
 		this.setupPanel.setContent({
-			heading: ["Configure your model", "Select API protocol"],
-			hints: "↑/↓ Select · Enter Next · Esc Exit",
+			heading: [options.heading ?? "Configure your model", "Select API protocol"],
+			hints: editing ? "↑/↓ Select · Enter Next · Esc Cancel" : "↑/↓ Select · Enter Next · Esc Exit",
 		})
 		const chosen = await this.setupPick("Protocol", SETUP_PROTOCOLS, draft.protocol)
 		if (chosen !== null && (chosen === "openai" || chosen === "anthropic")) {
+			// The address default belongs to a protocol the user just switched
+			// to. Merely confirming the one already there must not rewrite an
+			// address the draft carries — an edit keeps the endpoint it saved.
+			if (chosen !== draft.protocol) draft.endpoint = SETUP_ENDPOINTS[chosen]
 			draft.protocol = chosen
-			// The address default belongs to the protocol just chosen.
-			draft.endpoint = SETUP_ENDPOINTS[chosen]
 			return "endpoint"
 		}
-		const leave = await this.setupPick("Leave setup?", [
-			{ value: "stay", label: "Continue setup" },
-			{ value: "exit", label: "Exit LoongCode", description: "LoongCode cannot run tasks without a model" },
-		])
+		const leave = await this.setupPick(
+			editing ? "Cancel the edit?" : "Leave setup?",
+			[
+				{ value: "stay", label: editing ? "Continue editing" : "Continue setup" },
+				{
+					value: "exit",
+					label: editing ? "Cancel the edit" : "Exit LoongCode",
+					...(editing ? {} : { description: "LoongCode cannot run tasks without a model" }),
+				},
+			],
+		)
 		return leave === "exit" ? "exit" : "protocol"
 	}
 
@@ -1331,6 +1468,128 @@ export class LoongCodeTui {
 			if (problem !== null) continue
 			draft[field] = trimmed
 			return spec.next
+		}
+	}
+
+	/**
+	 * Step 3 of an edit — the key, without ever showing the stored one.
+	 *
+	 * The choice is made first, so the stored key never reaches a prompt or a
+	 * label: keeping it is the default and changes nothing, and only a
+	 * replacement is typed, into a masked field that starts empty. A draft that
+	 * keeps its key still holds it, so escaping out of the replacement prompt
+	 * cannot lose it.
+	 */
+	private async setupKeyStep(draft: SetupDraft): Promise<SetupStep> {
+		const spec = SETUP_FIELDS.apiKey
+		this.setupPanel.setContent({
+			step: spec.step,
+			heading: [spec.heading],
+			note: "The stored key is not displayed.",
+			hints: "↑/↓ Select · Enter Next · Esc Back",
+		})
+		const choice = await this.setupPick(
+			"API key",
+			[
+				{ value: "keep", label: "Keep existing key" },
+				{ value: "replace", label: "Enter a new key…" },
+			],
+			"keep",
+		)
+		if (choice === null) return "endpoint"
+		if (choice === "keep") return "model"
+
+		let problem: string | null = null
+		for (;;) {
+			this.setupPanel.setContent({
+				step: spec.step,
+				heading: [spec.heading],
+				...(problem === null ? {} : { problem }),
+				hints: "Enter Next · Esc Back",
+			})
+			const entered = await this.commandContext.ask(spec.heading, { quiet: true, secret: true })
+			if (entered === null) return "endpoint"
+			const trimmed = entered.trim()
+			problem = spec.validate(trimmed)
+			if (problem !== null) continue
+			draft.apiKey = trimmed
+			return "model"
+		}
+	}
+
+	/**
+	 * The limits sub-step, unnumbered: the numbered five steps the user walks
+	 * are exactly the ones they always were.
+	 *
+	 * Escaping walks back the way the rest of the sequence does — out of a
+	 * prompt to this choice, out of the choice to the model identifier — so the
+	 * defaults stay reachable from anywhere inside the sub-step.
+	 */
+	private async setupLimitsStep(draft: SetupDraft, options: SetupRunOptions): Promise<SetupStep> {
+		for (;;) {
+			this.setupPanel.setContent({
+				heading: ["Model limits", "How much context LoongCode plans requests against."],
+				hints: "↑/↓ Select · Enter Next · Esc Back",
+			})
+			const choice = await this.setupPick("Model limits", [
+				{
+					value: "keep",
+					label: `${options.keepLimitsLabel} (${draft.contextWindow} / ${draft.maxOutputTokens})`,
+				},
+				{ value: "configure", label: "Configure limits…" },
+			])
+			if (choice === null) return "model"
+			if (choice === "keep") return "test"
+			const applied = await this.promptForLimits(draft)
+			if (applied === "back") return "model"
+			if (applied === "cancelled") continue
+			return "test"
+		}
+	}
+
+	/**
+	 * The two limit prompts, validated against the same rules the configuration
+	 * schema enforces — a pair that would not validate is never carried into the
+	 * connection test or the save.
+	 */
+	private async promptForLimits(draft: SetupDraft): Promise<"applied" | "back" | "cancelled"> {
+		const contextWindow = await this.promptForLimit("Context window", draft.contextWindow, () => null)
+		if (contextWindow === null) return "cancelled"
+		const maxOutputTokens = await this.promptForLimit("Max output tokens", draft.maxOutputTokens, value =>
+			value > contextWindow
+				? `max output tokens (${value}) must not exceed the context window (${contextWindow})`
+				: null,
+		)
+		if (maxOutputTokens === null) return "cancelled"
+		draft.contextWindow = contextWindow
+		draft.maxOutputTokens = maxOutputTokens
+		return "applied"
+	}
+
+	/** One numeric field of the limits sub-step, reported on its own screen. */
+	private async promptForLimit(
+		heading: string,
+		initial: number,
+		validate: (value: number) => string | null,
+	): Promise<number | null> {
+		let problem: string | null = null
+		for (;;) {
+			this.setupPanel.setContent({
+				heading: [heading],
+				...(problem === null ? {} : { problem }),
+				hints: "Enter Next · Esc Back",
+			})
+			const raw = await this.commandContext.ask(heading, { quiet: true, initialValue: String(initial) })
+			if (raw === null) return null
+			const trimmed = raw.trim()
+			const parsed = Number(trimmed)
+			if (trimmed.length === 0 || !Number.isInteger(parsed) || parsed <= 0) {
+				problem = `${heading} must be a positive integer.`
+				continue
+			}
+			problem = validate(parsed)
+			if (problem !== null) continue
+			return parsed
 		}
 	}
 
@@ -1375,25 +1634,27 @@ export class LoongCodeTui {
 	}
 
 	/** The success screen. Saving is an explicit choice made here and nowhere else. */
-	private async setupTestedStep(draft: SetupDraft): Promise<SetupStep> {
+	private async setupTestedStep(draft: SetupDraft, options: SetupRunOptions): Promise<SetupStep> {
 		this.setupPanel.setContent({
 			heading: [
 				"✓ Model test succeeded",
 				"",
 				`Protocol: ${protocolLabel(draft.protocol)}`,
 				`Model:    ${draft.model}`,
+				`Context:  ${draft.contextWindow} tokens`,
+				`Output:   ${draft.maxOutputTokens} tokens`,
 				"",
 				"A valid model response was received.",
 			],
 			hints: "↑/↓ Select · Enter Confirm",
 		})
 		const choice = await this.setupPick("Model test succeeded", [
-			{ value: "save", label: "Save and Enter Workspace" },
+			{ value: "save", label: options.saveLabel },
 			{ value: "edit", label: "Return to Edit Configuration" },
 		])
 		if (choice !== "save") return "model"
 
-		const unsaved = await this.saveSetupConfig(draft)
+		const unsaved = await options.commit(draft)
 		if (unsaved === null) return "saved"
 		if (unsaved === "cancelled") return "model"
 
@@ -1451,8 +1712,8 @@ export class LoongCodeTui {
 			endpoint: draft.endpoint,
 			model: draft.model,
 			apiKey: draft.apiKey,
-			contextWindow: SETUP_CONTEXT_WINDOW,
-			maxOutputTokens: SETUP_MAX_OUTPUT_TOKENS,
+			contextWindow: draft.contextWindow,
+			maxOutputTokens: draft.maxOutputTokens,
 		}
 	}
 

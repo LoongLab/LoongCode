@@ -62,13 +62,24 @@ interface SetupInput {
 	readonly endpoint: string
 	readonly apiKey?: string
 	readonly model?: string
+	/** Walk the limits sub-step into `Configure limits…` with these values
+	 *  instead of taking the row that keeps what the draft already has. */
+	readonly limits?: { readonly contextWindow: string; readonly maxOutputTokens: string }
 }
 
 /**
- * Walks the approved sequence: protocol, address, key, model identifier, and
- * the connection test that follows — stopping on the screen the test produced.
+ * Walks the approved sequence: protocol, address, key, model identifier, the
+ * unnumbered limits sub-step, and the connection test that follows — stopping
+ * on the screen the test produced.
  */
 async function driveSetupToTest(h: Harness, input: SetupInput): Promise<void> {
+	await driveSetupToLimitsChoice(h, input)
+	await driveLimitsStep(h, input)
+	await flush(80)
+}
+
+/** The walk up to the limits sub-step's choice, with the model id submitted. */
+async function driveSetupToLimitsChoice(h: Harness, input: SetupInput): Promise<void> {
 	// Step 1 — protocol. The first row is `OpenAI-compatible`.
 	if (input.protocol === "anthropic") {
 		h.tty.feed(DOWN)
@@ -88,11 +99,55 @@ async function driveSetupToTest(h: Harness, input: SetupInput): Promise<void> {
 	await flush()
 	h.tty.feed(ENTER)
 	await flush(16)
-	// Step 4 — the model identifier, and the test it triggers.
+	// Step 4 — the model identifier.
 	h.tty.feed(input.model ?? "probe-model")
 	await flush()
 	h.tty.feed(ENTER)
-	await flush(80)
+	await flush(16)
+}
+
+/** Walks into `Configure limits…` and answers the context window, leaving the
+ *  max-output prompt waiting — the state a validation test needs. */
+async function driveSetupToMaxOutputPrompt(
+	h: Harness,
+	input: { readonly endpoint: string; readonly contextWindow: string },
+): Promise<void> {
+	await driveSetupToLimitsChoice(h, input)
+	h.tty.feed(DOWN) // `Continue with defaults` → `Configure limits…`
+	await flush(8)
+	h.tty.feed(ENTER)
+	await flush(16)
+	h.tty.feed(CTRL_U)
+	await flush(4)
+	h.tty.feed(input.contextWindow)
+	await flush()
+	h.tty.feed(ENTER)
+	await flush(16)
+}
+
+/**
+ * The unnumbered limits sub-step. Its first row keeps the values the draft
+ * already has, so the default walk is one Enter; `Configure limits…` is the
+ * second row and is followed by two seeded prompts.
+ */
+async function driveLimitsStep(h: Harness, input: SetupInput): Promise<void> {
+	if (input.limits === undefined) {
+		h.tty.feed(ENTER)
+		await flush(16)
+		return
+	}
+	h.tty.feed(DOWN)
+	await flush(8)
+	h.tty.feed(ENTER)
+	await flush(16)
+	for (const value of [input.limits.contextWindow, input.limits.maxOutputTokens]) {
+		h.tty.feed(CTRL_U)
+		await flush(4)
+		h.tty.feed(value)
+		await flush()
+		h.tty.feed(ENTER)
+		await flush(16)
+	}
 }
 
 /** The whole sequence, through the explicit save. */
@@ -774,7 +829,9 @@ describe("the model test", () => {
 			await flush(16)
 			h.tty.feed("probe-model")
 			await flush()
-			h.tty.feed(ENTER) // the test starts, and hangs
+			h.tty.feed(ENTER)
+			await flush(16)
+			h.tty.feed(ENTER) // the limits sub-step keeps the defaults, then the test starts and hangs
 			await flush(40)
 			expect(screen(h)).toContain("Testing model…")
 
@@ -1310,6 +1367,350 @@ describe("opening the gate", () => {
 
 		expect(phaseOf(h)).toBe("normal")
 		expect(slotHoldsEditor(h)).toBe(true)
+		expect(rejections).toEqual([])
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Limits, editing and removal: the model configuration surface restored
+// ---------------------------------------------------------------------------
+
+describe("model limits", () => {
+	test("a model created without touching the sub-step keeps the defaults", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			const h = await mount()
+			await driveSetupToSaved(h, { endpoint: `${provider.url}/v1` })
+
+			const saved = JSON.parse(readFileSync(modelsFile(), "utf-8"))
+			expect(saved.models[0]).toMatchObject({
+				id: "probe-model",
+				contextWindow: 128000,
+				maxOutputTokens: 8192,
+			})
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("configured limits are shown on the tested screen and persisted unchanged", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			const h = await mount()
+			await driveSetupToTest(h, {
+				endpoint: `${provider.url}/v1`,
+				limits: { contextWindow: "8000", maxOutputTokens: "2000" },
+			})
+
+			// The tested screen states exactly what the save will write.
+			const view = screen(h)
+			expect(view).toContain("Context:  8000 tokens")
+			expect(view).toContain("Output:   2000 tokens")
+
+			h.tty.feed(ENTER) // Save and Enter Workspace
+			await flush(60)
+
+			const saved = JSON.parse(readFileSync(modelsFile(), "utf-8"))
+			expect(saved.models[0]).toMatchObject({ contextWindow: 8000, maxOutputTokens: 2000 })
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("max output tokens above the context window is rejected on its own screen", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			const h = await mount()
+			await driveSetupToMaxOutputPrompt(h, { endpoint: `${provider.url}/v1`, contextWindow: "8000" })
+
+			h.tty.feed(CTRL_U)
+			await flush(4)
+			h.tty.feed("9000")
+			await flush()
+			h.tty.feed(ENTER)
+			await flush(16)
+
+			const view = screen(h)
+			expect(view).toContain("max output tokens (9000) must not exceed the context window (8000)")
+			// Still inside the sub-step: no connection test was made of a pair
+			// the configuration schema would reject, and nothing was saved.
+			expect(view).not.toContain("Model test succeeded")
+			expect(existsSync(modelsFile())).toBe(false)
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+})
+
+describe("editing a model from the workspace", () => {
+	/** A model with its own limits and a key no screen may ever show. */
+	const savedModel = (endpoint: string): string =>
+		JSON.stringify({
+			version: 1,
+			models: [
+				{
+					...configuredModel("probe", endpoint),
+					apiKey: "sk-original-key-never-shown",
+					contextWindow: 8_000,
+					maxOutputTokens: 2_000,
+				},
+			],
+			activeModelId: "probe",
+		})
+
+	/** `/model` → `Edit model…` → the only configured model. */
+	async function openEdit(h: Harness): Promise<void> {
+		await type(h, "/model")
+		h.tty.feed(DOWN) // past the model row
+		await flush(4)
+		h.tty.feed(DOWN) // `Add model…` → `Edit model…`
+		await flush(4)
+		h.tty.feed(ENTER)
+		await flush(16)
+		h.tty.feed(ENTER) // the only configured model
+		await flush(24)
+	}
+
+	test("prefills what is saved, keeps the key, and updates without changing the id", async () => {
+		const provider = await startMockProvider(({ path, body }) => providerReply(path, body))
+		try {
+			writeModels(savedModel(`${provider.url}/v1`))
+			const h = await mount()
+			await openEdit(h)
+			expect(screen(h)).toContain('Edit "probe"')
+
+			h.tty.feed(ENTER) // protocol, seeded
+			await flush(16)
+			h.tty.feed(ENTER) // endpoint, seeded
+			await flush(16)
+			// The key step offers to keep the stored key — and never shows it.
+			const keyScreen = screen(h)
+			expect(keyScreen).toContain("Keep existing key")
+			expect(keyScreen).toContain("The stored key is not displayed.")
+			expect(keyScreen).not.toContain("sk-original-key-never-shown")
+			h.tty.feed(ENTER) // keep
+			await flush(16)
+			h.tty.feed(ENTER) // model id, seeded
+			await flush(16)
+			// Limits: walk in and change both.
+			h.tty.feed(DOWN)
+			await flush(8)
+			h.tty.feed(ENTER)
+			await flush(16)
+			for (const value of ["16000", "4000"]) {
+				h.tty.feed(CTRL_U)
+				await flush(4)
+				h.tty.feed(value)
+				await flush()
+				h.tty.feed(ENTER)
+				await flush(16)
+			}
+			await flush(200) // the probe
+
+			// The probe tested the stored key — the criterion is that keeping it
+			// preserves it exactly, which is only observable at the wire. This
+			// also pins the endpoint: a probe that reached any other host would
+			// record nothing here.
+			const probe = provider.requests.at(-1)
+			expect(probe?.headers["authorization"] ?? probe?.headers["x-api-key"]).toBe(
+				"Bearer sk-original-key-never-shown",
+			)
+
+			expect(screen(h)).toContain("Save changes")
+			h.tty.feed(ENTER)
+			await flush(60)
+
+			const saved = JSON.parse(readFileSync(modelsFile(), "utf-8"))
+			expect(saved.models).toHaveLength(1)
+			expect(saved.models[0]).toMatchObject({
+				id: "probe",
+				name: "probe",
+				contextWindow: 16_000,
+				maxOutputTokens: 4_000,
+				apiKey: "sk-original-key-never-shown",
+			})
+			expect(saved.activeModelId).toBe("probe")
+			expect(phaseOf(h)).toBe("normal")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("cancelling an edit leaves the file byte-identical and says where it goes", async () => {
+		writeModels(savedModel("http://127.0.0.1:9/v1"))
+		const before = readFileSync(modelsFile(), "utf-8")
+		const h = await mount()
+		await openEdit(h)
+
+		h.tty.feed(ESC) // the leave question, which for an edit is a cancel
+		await flush(16)
+		const question = screen(h)
+		expect(question).toContain("Cancel the edit?")
+		expect(question).not.toContain("Exit LoongCode")
+
+		h.tty.feed(DOWN) // `Continue editing` → `Cancel the edit`
+		await flush(4)
+		h.tty.feed(ENTER)
+		await flush(24)
+
+		expect(readFileSync(modelsFile(), "utf-8")).toBe(before)
+		expect(phaseOf(h)).toBe("normal")
+		expect(rejections).toEqual([])
+	})
+
+	test("a failed test saves nothing", async () => {
+		// A provider that rejects the credential: the probe fails, and the
+		// failure screen offers no way to save. A 401 rather than a 5xx, because
+		// a server error is retried and would only make the test slow.
+		const provider = await startMockProvider(
+			() =>
+				new Response(JSON.stringify({ error: { message: "Incorrect API key provided." } }), {
+					status: 401,
+					headers: { "content-type": "application/json" },
+				}),
+		)
+		try {
+			writeModels(savedModel(`${provider.url}/v1`))
+			const before = readFileSync(modelsFile(), "utf-8")
+			const h = await mount()
+			await openEdit(h)
+
+			h.tty.feed(ENTER) // protocol
+			await flush(16)
+			h.tty.feed(ENTER) // endpoint
+			await flush(16)
+			h.tty.feed(ENTER) // keep the key
+			await flush(16)
+			h.tty.feed(ENTER) // model id
+			await flush(16)
+			h.tty.feed(ENTER) // limits: keep
+			await flush(200)
+
+			const view = screen(h)
+			expect(view).toContain("Model test failed")
+			expect(view).not.toContain("Save changes")
+			// The stored key is not echoed back onto the screen either.
+			expect(view).not.toContain("sk-original-key-never-shown")
+			expect(readFileSync(modelsFile(), "utf-8")).toBe(before)
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+})
+
+describe("removing a model from the workspace", () => {
+	/** `/model` → `Remove model…` → the model at `index`. */
+	async function openRemove(h: Harness, index: number, models: number): Promise<void> {
+		await type(h, "/model")
+		// The action rows follow the model rows: Add, Edit, Remove.
+		for (let i = 0; i < models + 2; i++) {
+			h.tty.feed(DOWN)
+			await flush(4)
+		}
+		h.tty.feed(ENTER)
+		await flush(16)
+		for (let i = 0; i < index; i++) {
+			h.tty.feed(DOWN)
+			await flush(4)
+		}
+		h.tty.feed(ENTER)
+		await flush(24)
+	}
+
+	test("removing a non-active model leaves the active model untouched", async () => {
+		writeModels(
+			JSON.stringify({
+				version: 1,
+				models: [configuredModel("a"), configuredModel("b")],
+				activeModelId: "a",
+			}),
+		)
+		const h = await mount()
+		await openRemove(h, 1, 2)
+
+		// The confirmation names the model, and Cancel is the highlighted choice.
+		const confirmation = screen(h)
+		expect(confirmation).toContain('Remove "b"')
+		h.tty.feed(UP) // move off Cancel onto the removal itself
+		await flush(4)
+		h.tty.feed(ENTER)
+		await flush(24)
+
+		const saved = JSON.parse(readFileSync(modelsFile(), "utf-8"))
+		expect(saved.models.map((model: { id: string }) => model.id)).toEqual(["a"])
+		expect(saved.activeModelId).toBe("a")
+		expect(screen(h)).toContain('removed model "b"')
+		expect(phaseOf(h)).toBe("normal")
+		expect(rejections).toEqual([])
+	})
+
+	test("removing the active model reopens the gate immediately", async () => {
+		writeModels(validConfig("http://127.0.0.1:9/v1"))
+		const h = await mount()
+		expect(phaseOf(h)).toBe("normal")
+
+		await openRemove(h, 0, 1)
+		h.tty.feed(UP)
+		await flush(4)
+		h.tty.feed(ENTER)
+		await flush(40)
+
+		// No task had to be submitted: the gate is already back, offering the
+		// sequence for a store with nothing active in it.
+		expect(phaseOf(h)).toBe("setup")
+		expect(screen(h)).toContain("Select API protocol")
+		const saved = JSON.parse(readFileSync(modelsFile(), "utf-8"))
+		expect(saved.models).toEqual([])
+		expect(saved.activeModelId).toBeNull()
+		expect(rejections).toEqual([])
+	})
+
+	test("a model change is refused while a task is running", async () => {
+		// A provider that accepts the request and never answers, so the run is
+		// still in flight while the command is typed.
+		const provider = await startMockProvider(() => new Promise<Response>(() => {}))
+		try {
+			writeModels(validConfig(`${provider.url}/v1`))
+			const h = await mount()
+			await type(h, "do something slow")
+			await flush(40)
+
+			await type(h, "/model")
+			for (let i = 0; i < 3; i++) {
+				h.tty.feed(DOWN) // the model row, Add, Edit → Remove
+				await flush(4)
+			}
+			h.tty.feed(ENTER)
+			await flush(16)
+
+			expect(screen(h)).toContain("A task is running — wait for it to finish before changing models.")
+			// The removal never started: the model is still configured and active.
+			const saved = JSON.parse(readFileSync(modelsFile(), "utf-8"))
+			expect(saved.models).toHaveLength(1)
+			expect(saved.activeModelId).toBe("probe")
+			expect(rejections).toEqual([])
+		} finally {
+			await provider.close()
+		}
+	})
+
+	test("a provider that is unavailable does not reopen the setup gate", async () => {
+		// Configured, but the endpoint refuses connections: a run fails against
+		// the provider, which is a run failure — not a missing model.
+		writeModels(validConfig("http://127.0.0.1:9/v1"))
+		const h = await mount()
+		expect(phaseOf(h)).toBe("normal")
+
+		await type(h, "do something")
+		await flush(80)
+
+		expect(phaseOf(h)).toBe("normal")
+		expect(screen(h)).not.toContain("Select API protocol")
 		expect(rejections).toEqual([])
 	})
 })

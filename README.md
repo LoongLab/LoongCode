@@ -86,8 +86,9 @@ Bun is the development runtime here (package manager, bundler, test runner); the
 published package does not need it. On first launch the same setup flow as above
 runs before the workspace opens — protocol (`openai` or `anthropic`), endpoint, a
 provider model name, and your API key, with context and output limits defaulted
-and only exposed under an optional *Configure limits…* step. The configuration is
-saved locally, and you can switch models later with `/model` or Ctrl+P.
+to 128000 and 8192 and changeable in the optional *Configure limits…* step of
+that flow. The configuration is saved locally, and you can switch models later
+with `/model` or Ctrl+P.
 
 Then type a task, press Enter, and watch it work.
 
@@ -104,13 +105,16 @@ Model commands:
 
 | Command | Purpose |
 | --- | --- |
-| `/model` | Select an existing model, or choose `Add model…` to configure a new one |
+| `/model` | Select a model, or `Add model…` / `Edit model…` / `Remove model…` to configure one |
 | Ctrl+P | Cycle through configured models |
 
-`/model` is the single interactive model surface. Adding a model asks for the
-protocol, endpoint, provider model, and API key, with sensible defaults for the
-context and output limits (changeable through an optional `Configure limits…`
-step).
+`/model` is the single interactive model surface: the picker lists your models
+and the actions that configure them. Adding and editing run the same sequence —
+protocol, endpoint, provider model, API key, an optional `Configure limits…`
+step, then a real connection test that must pass before anything is saved. An
+edit is seeded from the saved configuration and never displays the stored API
+key; it offers to keep that key or replace it. Model changes are refused while a
+task or a compaction is running, and removing the active model reopens setup.
 
 Configuration is persisted locally under your config directory
 (`~/.loongcode/models.json`) — you can also edit that file directly.

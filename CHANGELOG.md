@@ -6,6 +6,20 @@ All notable changes to LoongCode will be documented in this file.
 
 ### Added
 
+- Model configuration is complete again in the product. The setup flow's
+  unnumbered `Configure limits…` sub-step sets a new model's `contextWindow` and
+  `maxOutputTokens` (defaulting to 128000 and 8192, validated as positive
+  integers with the output ceiling no larger than the window); the values are
+  shown on the screen that confirms the connection test, and the probe tests
+  exactly the configuration that will be saved. `/model` offers `Edit model…`,
+  which runs the same sequence seeded from what is saved — the id and its
+  derived name stay put, the stored API key is never displayed and is either
+  kept or replaced through the masked prompt, and nothing is written until a
+  connection test succeeds — and `Remove model…`, which confirms by name.
+  Removing the active model reopens setup immediately instead of waiting for the
+  next task; removing any other model leaves the active one alone. All three
+  actions are refused while a task or a compaction is running, so a model change
+  can never take the workspace view out from under a run.
 - An empty transcript now opens with a large `LOONGCODE` block wordmark and the
   descriptor "an opinionated coding agent", followed by the existing keyboard
   hints. The hero is a true empty state: it is centered as a group in the
@@ -58,6 +72,11 @@ All notable changes to LoongCode will be documented in this file.
 
 ### Removed
 
+- The `settings.json` key `model`. It documented a "default active model id"
+  that nothing ever read, and its validation could fail a settings load — and
+  through it a run — over a value with no effect. The active model has always
+  been owned by `models.json`; a settings file that still carries the key keeps
+  loading, because unknown keys are ignored.
 - Slash command `/reload`. Prompt templates are discovered live, `AGENTS.md` /
   `CLAUDE.md` and agent-facing resources load on every run, so there is nothing
   left to refresh manually.
