@@ -4,6 +4,17 @@ All notable changes to LoongCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-13
+
+A model-configuration and context-management release. The setup flow sets a
+model's context window and output ceiling again; `/model` edits and removes
+models — seeded from what is saved, never displaying a stored key, and always
+tested before anything is written; and a run whose context overflows no longer
+ends when compaction cannot help: the request is reduced instead, and every
+compaction that cannot progress is reported rather than discarded. It also
+records the rename and the command consolidation the code has carried since
+0.1.2, which are listed below.
+
 ### Added
 
 - Model configuration is complete again in the product. The setup flow's

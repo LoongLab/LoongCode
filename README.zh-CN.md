@@ -177,7 +177,7 @@ loongcode -c -p "现在修复你发现的问题" /path/to/project
 
 ## 当前状态
 
-**状态：早期实验开发阶段。** LoongCode 仍在积极开发中。当前版本为 v0.1.2——包含的内容见 [CHANGELOG.md](CHANGELOG.md)。
+**状态：早期实验开发阶段。** LoongCode 仍在积极开发中。当前版本为 v0.1.3——包含的内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可证
 

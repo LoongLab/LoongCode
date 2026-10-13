@@ -177,7 +177,7 @@ loongcode -c -p "발견한 문제를 수정해 줘" /path/to/project
 
 ## 현재 상태
 
-**상태: 초기 실험적 개발 단계.** LoongCode는 현재 활발히 개발 중입니다. 현재 버전은 v0.1.2입니다. 포함된 내용은 [CHANGELOG.md](CHANGELOG.md)에서 확인하세요.
+**상태: 초기 실험적 개발 단계.** LoongCode는 현재 활발히 개발 중입니다. 현재 버전은 v0.1.3입니다. 포함된 내용은 [CHANGELOG.md](CHANGELOG.md)에서 확인하세요.
 
 ## 라이선스
 
