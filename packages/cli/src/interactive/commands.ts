@@ -184,7 +184,11 @@ export const COMMANDS: Command[] = [
           ctx.notify(`context compacted — ${result.removed} messages summarized`)
           break
         case "no-progress":
-          ctx.notify("nothing to compact")
+          // The reason is the diagnosis, not decoration: `empty-tail` means a
+          // single-turn history whose whole compactable region is the live
+          // task, which no amount of retrying will change — and which is why a
+          // run at its budget has to shed the request instead.
+          ctx.notify(`nothing to compact — ${result.reason}`)
           break
         case "failed":
           ctx.notify(`compaction failed: ${result.error}`, true)

@@ -23,7 +23,9 @@ import { ansi, markdownTheme } from "./view/theme"
 import {
 	NO_RUN_DISPLAY,
 	compactionNoticeText,
+	compactionSkippedNoticeText,
 	footerRows,
+	projectionReducedNoticeText,
 	reduceRunDisplay,
 	runSummaryLines,
 	type RunDisplay,
@@ -1750,6 +1752,14 @@ export class LoongCodeTui {
 			}
 			case "compaction":
 				this.chat.addChild(notice(compactionNoticeText(event.summarizedMessages, event.usage)))
+				break
+			case "compaction_skipped":
+				// The history could not shrink. Not necessarily fatal — the
+				// projection recovery below may follow — but always stated.
+				this.chat.addChild(notice(compactionSkippedNoticeText(event.reason, event.trigger)))
+				break
+			case "projection_reduced":
+				this.chat.addChild(notice(projectionReducedNoticeText(event.reduced, event.originalBytes)))
 				break
 			case "auto_retry":
 				this.loader.setMessage(

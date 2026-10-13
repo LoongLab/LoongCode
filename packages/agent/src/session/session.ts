@@ -1,5 +1,13 @@
 import type { ModelAssistantPart, ModelMessage, ModelToolResult, ModelUsage } from "@loongcode/model"
-import type { ModelIdentity, RewindNote, RunFinishReason, RunSummary, SessionMessage, SessionStatus } from "./types"
+import type {
+  CompactionSkip,
+  ModelIdentity,
+  RewindNote,
+  RunFinishReason,
+  RunSummary,
+  SessionMessage,
+  SessionStatus,
+} from "./types"
 import { ToolLedger } from "./ledger"
 import { parseMessages, parseRewindNote, parseRuns, validateReplacementHistory } from "./serialization"
 import { pruneOldToolOutputs } from "../context/projection"
@@ -56,6 +64,10 @@ export interface RunOutcome {
   readonly toolCalls: number
   /** Absent when the run never pruned anything. */
   readonly pruning?: PruneStats
+  /** Absent when no forced recovery reduction ran. */
+  readonly projectionRecoveries?: PruneStats
+  /** Absent when compaction never failed to progress. */
+  readonly compactionSkips?: readonly CompactionSkip[]
   /** Present only when the run ended in an error. */
   readonly error?: string
 }
@@ -275,6 +287,8 @@ export class Session {
       modelCalls: outcome.modelCalls,
       toolCalls: outcome.toolCalls,
       ...(outcome.pruning === undefined ? {} : { pruning: outcome.pruning }),
+      ...(outcome.projectionRecoveries === undefined ? {} : { projectionRecoveries: outcome.projectionRecoveries }),
+      ...(outcome.compactionSkips === undefined ? {} : { compactionSkips: outcome.compactionSkips }),
       ...(outcome.error === undefined ? {} : { error: outcome.error }),
     }
     this._runs[index] = finished

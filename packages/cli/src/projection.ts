@@ -604,6 +604,35 @@ export function compactionNoticeText(
   return cost === undefined ? base : `${base} · ${cost}`
 }
 
+/** Why compaction could not progress, in the user's terms. */
+const COMPACTION_SKIP_TEXT: Record<Extract<RunEvent, { type: "compaction_skipped" }>["reason"], string> = {
+  "no-compactable-region": "the history holds no region compaction may rewrite",
+  "empty-tail": "everything outside the live turn is the recent tail",
+  "empty-summary": "the summarization call returned nothing usable",
+}
+
+/** Which trigger found it that way — the difference between a warning and a
+ *  failure, since only the post-response triggers can end a run. */
+function skipTriggerText(trigger: Extract<RunEvent, { type: "compaction_skipped" }>["trigger"]): string {
+  if (trigger === "proactive") return "reported before the next request"
+  return trigger === "reactive" ? "reported after the response" : "reported by the provider"
+}
+
+/** The compaction-skipped line: why the history could not shrink, and when it
+ *  was found out. Never silent — this outcome used to be discarded, which is
+ *  what made the failure it precedes undiagnosable. */
+export function compactionSkippedNoticeText(
+  reason: Extract<RunEvent, { type: "compaction_skipped" }>["reason"],
+  trigger: Extract<RunEvent, { type: "compaction_skipped" }>["trigger"],
+): string {
+  return `context compaction skipped — ${COMPACTION_SKIP_TEXT[reason]} (${skipTriggerText(trigger)})`
+}
+
+/** The recovery line: the history could not shrink, so the request did. */
+export function projectionReducedNoticeText(reduced: number, originalBytes: number): string {
+  return `context overflow — withheld ${count(reduced, "tool result")} (${formatBytes(originalBytes)}) to fit the request`
+}
+
 /** `1 model call`, `2 model calls` — a count read as prose. */
 function count(n: number, singular: string): string {
   return `${n} ${singular}${n === 1 ? "" : "s"}`
@@ -668,6 +697,22 @@ export function runSummaryLines(run: RunSummary): string[] {
   if (run.pruning !== undefined && run.pruning.reduced > 0) {
     const results = run.pruning.reduced === 1 ? "result" : "results"
     lines.push(`pruned ${run.pruning.reduced} tool ${results} (${formatBytes(run.pruning.originalBytes)})`)
+  }
+
+  // Why compaction gave up, and how often — the fact that decides what a
+  // later overflow can do, so it is reported rather than left in the record.
+  if (run.compactionSkips !== undefined && run.compactionSkips.length > 0) {
+    const skips = run.compactionSkips.map(skip => `${skip.reason} ×${skip.count} (${skip.trigger})`).join(", ")
+    lines.push(`compaction made no progress: ${skips}`)
+  }
+
+  // Recovery passes are part of `pruning` too; this line is what separates a
+  // run that shed context to survive from one that was merely trimmed.
+  if (run.projectionRecoveries !== undefined && run.projectionRecoveries.reduced > 0) {
+    lines.push(
+      `recovered from overflow by withholding ${count(run.projectionRecoveries.reduced, "tool result")} ` +
+        `(${formatBytes(run.projectionRecoveries.originalBytes)})`,
+    )
   }
 
   return lines

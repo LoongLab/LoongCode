@@ -121,6 +121,26 @@ export interface ModelIdentity {
 }
 
 /**
+ * Why a compaction attempt could not make progress.
+ *
+ * `no-compactable-region` — the region compaction may rewrite is empty, or is
+ * the live turn itself. `empty-tail` — everything in that region would have to
+ * be kept as the recent tail, leaving nothing to summarize. `empty-summary` —
+ * the summarization call returned nothing usable.
+ */
+export type CompactionSkipReason = "no-compactable-region" | "empty-tail" | "empty-summary"
+
+/** Which trigger found compaction unable to progress. */
+export type CompactionTrigger = "proactive" | "reactive" | "provider"
+
+/** One reason/trigger pair compaction could not progress on, and how often. */
+export interface CompactionSkip {
+  readonly reason: CompactionSkipReason
+  readonly trigger: CompactionTrigger
+  readonly count: number
+}
+
+/**
  * One run's facts, recorded on the session it ran against.
  *
  * The record is written when the run starts and completed when it reaches a
@@ -146,6 +166,19 @@ export interface RunSummary {
    * Absent when the run never pruned anything.
    */
   readonly pruning?: PruneStats
+  /**
+   * Totals across forced recovery reductions only: the passes that ran after a
+   * provider rejected a request the estimate called fitting. Pressure-driven
+   * reduction is in `pruning`; keeping them apart is what lets a reader tell a
+   * routine trim from a run that had to shed context to survive. Absent when no
+   * recovery pass ran.
+   */
+  readonly projectionRecoveries?: PruneStats
+  /**
+   * Compaction attempts that could not progress, aggregated by reason and
+   * trigger. Absent when every attempt either completed or never ran.
+   */
+  readonly compactionSkips?: readonly CompactionSkip[]
   /** Present only when the run ended in an error. */
   readonly error?: string
 }
