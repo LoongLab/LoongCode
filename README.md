@@ -355,6 +355,11 @@ something interesting with it, we'd love to hear about it.
 Participation in the project is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
 Report unacceptable behavior to oliverxu1996@qq.com.
 
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Do
+not open a public issue for a security report.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE). Third-party material retains its own

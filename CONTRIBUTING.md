@@ -83,6 +83,10 @@ The published CLI bundles code from `@loongcode/tui`, which is derived from MIT-
 
 Write clear commit subjects that describe the change. Keep unrelated changes in separate commits. The default branch is `master`; open pull requests against it.
 
+## Security
+
+Do not open a public issue for a vulnerability. Report it privately as described in [SECURITY.md](SECURITY.md).
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [Apache License 2.0](LICENSE), the same license as the project.
