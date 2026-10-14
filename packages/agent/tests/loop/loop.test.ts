@@ -240,6 +240,25 @@ describe("AgentLoop control flow (V2)", () => {
     cleanup()
   })
 
+  test("no iteration cap by default: a run past the old 100 limit completes", async () => {
+    // 101 distinct tool calls then a final answer — more iterations than the
+    // former 100 default allowed, with no maxIterations supplied. Distinct
+    // commands keep doom-loop protection out of the picture, so only the
+    // (now absent) implicit ceiling could stop this run.
+    let n = 0
+    const steps = Array.from({ length: 101 }, () =>
+      toolCallResponse([{ toolCallId: `call_${++n}`, toolName: "bash", input: { command: `true #${n}` } }]),
+    )
+    const { agent, dir, cleanup } = agentFor(new FakeModel([...steps, textResponse("finished")]))
+    const session = agent.createSession(dir)
+
+    const result = await agent.run(session, "run long")
+
+    expect(result.finishReason).toBe("stop")
+    expect(result.iterations).toBe(102) // 101 tool iterations + the final answer
+    cleanup()
+  })
+
   test("abort signal terminates the run as aborted (AC9)", async () => {
     const controller = new AbortController()
     const { agent, dir, cleanup } = agentFor(new FakeModel([

@@ -4,6 +4,22 @@ All notable changes to LoongCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-10-14
+
+An iteration-limit release. The agent loop no longer imposes an implicit
+100-iteration ceiling on a run. Without an explicit limit a task runs until the
+model stops, doom-loop protection trips, or the run is aborted; a caller that
+wants a bound still sets `maxIterations`.
+
+### Changed
+
+- **The default iteration cap is removed.** A run is now unbounded unless the
+  caller supplies `maxIterations`. Previously the loop stopped once it passed
+  100 iterations with the `max-iterations` finish reason. That reason is still
+  reachable, but only for a limit the caller set explicitly; the automatic
+  stops that remain are doom-loop protection (three identical consecutive tool
+  calls) and the abort signal.
+
 ## [0.1.4] - 2026-10-14
 
 A licensing and packaging release. The published package now carries the

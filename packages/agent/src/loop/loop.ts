@@ -23,6 +23,9 @@ import { buildSystemPrompt } from "../context/prompt"
 
 export interface LoopOptions {
   signal?: AbortSignal
+  /** Maximum model/tool iterations for one run. Omitted means no limit: the
+   *  loop runs until the model stops, doom-loop protection trips, or the run
+   *  is aborted. Only a caller-supplied value bounds it. */
   maxIterations?: number
   /** Base delay for auto-retry backoff (2s, 4s, …). Test seam. */
   autoRetryDelayMs?: number
@@ -42,7 +45,6 @@ export interface LoopOptions {
   recorder?: RewindRecorder
 }
 
-const DEFAULT_MAX_ITERATIONS = 100
 /** Identical consecutive tool calls tolerated before doom-loop protection. */
 const DOOM_LOOP_THRESHOLD = 3
 /** Compaction retries per run on provider-reported context overflow. */
@@ -121,7 +123,8 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<boolean> {
  *
  * One loop suffices here: compaction rewrites history
  * in place and the next iteration simply continues. Guards:
- * - max iterations → 'max-iterations'
+ * - max iterations → 'max-iterations' (only when the caller sets a limit;
+ *   otherwise the run is unbounded)
  * - 3 identical consecutive tool calls → 'doom-loop'
  * - abort signal wins everywhere → 'aborted'
  * - model errors end the run; context_exceeded compacts and retries, and an
@@ -142,7 +145,10 @@ export class AgentLoop {
   async run(task: string, opts: LoopOptions = {}): Promise<RunResult> {
     const signal = opts.signal
     const emit = opts.onEvent ?? (() => {})
-    const maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS
+    // No implicit ceiling: an unbounded run is the default. A caller that wants
+    // one passes it explicitly; without it the guards below (doom-loop, abort)
+    // are the only stops.
+    const maxIterations = opts.maxIterations
     const autoRetryDelayMs = opts.autoRetryDelayMs ?? AUTO_RETRY_DELAY_MS
 
     if (signal?.aborted) return { aborted: true, finishReason: "aborted", iterations: 0 }
@@ -237,7 +243,7 @@ export class AgentLoop {
 
     while (true) {
       iterations++
-      if (iterations > maxIterations) {
+      if (maxIterations !== undefined && iterations > maxIterations) {
         return { aborted: false, finishReason: "max-iterations", iterations }
       }
       if (signal?.aborted) return { aborted: true, finishReason: "aborted", iterations }
