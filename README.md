@@ -352,6 +352,9 @@ LoongCode is developed in the open. Bug reports and feature requests are welcome
 in [GitHub issues](https://github.com/LoongLab/LoongCode/issues). If you build
 something interesting with it, we'd love to hear about it.
 
+Participation in the project is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
+Report unacceptable behavior to oliverxu1996@qq.com.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE). Third-party material retains its own

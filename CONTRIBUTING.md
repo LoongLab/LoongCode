@@ -2,6 +2,8 @@
 
 Thanks for helping improve LoongCode. Focused bug fixes, new tools, context-management improvements, tests, and documentation are all welcome.
 
+Participation in this project is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). By taking part, you agree to uphold it. Report unacceptable behavior to oliverxu1996@qq.com.
+
 For anything large — a new tool, a change to how context is managed, or an architectural change — open an issue first and describe the intended scope so we can agree on it before you write much code.
 
 ## What fits
