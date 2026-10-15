@@ -4,6 +4,45 @@ All notable changes to LoongCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-16
+
+A terminal-interface release. The interactive view is rebuilt around an
+editorial transcript, and rendering no longer scales with conversation length.
+
+### Added
+
+- **The Masthead empty state.** A workspace with no messages opens on an
+  editorial masthead — the wordmark with the version set against the right
+  edge, a hairline rule, and a workspace line carrying the branch and the active
+  model — followed by the commands and keys worth surfacing. It scrolls away
+  with the transcript once a conversation exists.
+- **A numbered work-history margin.** Each model iteration is numbered in a left
+  margin; a tool call renders as a two-column row — its state glyph, name, and
+  argument against the runtime's own duration and a truthful result metric — and
+  a submitted task is marked with a chevron in the same margin rather than
+  receiving an iteration number.
+
+### Changed
+
+- **Composer.** The input carries a `❯` prompt rail; continuation lines align
+  under the text column instead of repeating the prompt, and an empty input
+  shows a restrained placeholder. Submission, newline, history, and shortcut
+  behavior are unchanged.
+- **Status line.** The footer no longer prints a standing `Idle` label, nor a
+  second `esc to interrupt` while a run is active — the interrupt affordance is
+  stated once, above the composer. Its usage row retracts on a short terminal at
+  render time, so a resize takes effect immediately instead of waiting for the
+  next run.
+
+### Performance
+
+- **Frames no longer scale with transcript length.** The scroll view is laid out
+  from a logical row count and a per-child height index and renders only the
+  visible window, instead of rendering the whole conversation on every frame.
+- **Assistant Markdown is parsed once per message.** A per-message renderer is
+  reused across frames rather than rebuilt on each one, and a streamed message
+  updates one renderer in place.
+
 ## [0.1.5] - 2026-10-14
 
 An iteration-limit release. The agent loop no longer imposes an implicit

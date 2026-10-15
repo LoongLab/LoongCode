@@ -76,6 +76,9 @@ const baseInput: FooterInput = {
 const row1Text = (o: Partial<FooterInput> = {}): string => footerRowText(footerRows({ ...baseInput, ...o }).row1)
 const row2Text = (o: Partial<FooterInput> = {}): string => footerRowText(footerRows({ ...baseInput, ...o }).row2)
 
+/** The workspace with a run in progress, for the narrow-width state tests. */
+const runningInput: FooterInput = { ...baseInput, running: true }
+
 // ---------------------------------------------------------------------------
 // 1 — the two scopes: last request vs whole run
 // ---------------------------------------------------------------------------
@@ -240,7 +243,7 @@ describe("an above-budget request is never an ordinary percentage", () => {
 
 describe("the model's window is shown separately from the input budget", () => {
   test("row 1 carries the model id and its window", () => {
-    expect(row1Text()).toBe("~/project (main) · Idle · deepseek-chat · 128k window")
+    expect(row1Text()).toBe("~/project (main) · deepseek-chat · 128k window")
   })
 
   test("a 1M model shows a 1M window while its budget remains its own", () => {
@@ -255,13 +258,13 @@ describe("the model's window is shown separately from the input budget", () => {
   test("an unresolved model omits the model groups and the context field", () => {
     // Nothing is known yet — which is not the same as knowing there is none.
     const text = row1Text({ modelId: undefined, limits: undefined })
-    expect(text).toBe("~/project (main) · Idle")
+    expect(text).toBe("~/project (main)")
     expect(row2Text({ modelId: undefined, limits: undefined })).toBe("no run yet")
   })
 
   test("no model configured says so where a configured user reads their model", () => {
     const text = row1Text({ modelId: undefined, limits: undefined, modelMissing: true })
-    expect(text).toBe("~/project (main) · Idle · no model")
+    expect(text).toBe("~/project (main) · no model")
   })
 
   test("setup hides the branch and the workspace's state", () => {
@@ -270,6 +273,8 @@ describe("the model's window is shown separately from the input budget", () => {
     const text = row1Text({ setup: true })
     expect(text).toBe("~/project · deepseek-chat · 128k window")
     expect(text).not.toContain("main")
+    // No workspace state word is invented while the workspace is closed.
+    expect(text).not.toContain("Working")
     expect(text).not.toContain("Idle")
   })
 
@@ -313,19 +318,23 @@ describe("the model's window is shown separately from the input budget", () => {
 
 describe("the footer states", () => {
   test("idle with no run", () => {
-    expect(row1Text()).toBe("~/project (main) · Idle · deepseek-chat · 128k window")
+    // Idle is the absence of a state word: the footer carries identity and
+    // context, not a label for doing nothing.
+    expect(row1Text()).toBe("~/project (main) · deepseek-chat · 128k window")
+    expect(row1Text()).not.toContain("Idle")
     expect(row2Text()).toBe("Context — · no run yet")
   })
 
   test("working, before the first response", () => {
     expect(row1Text({ running: true })).toContain("Working")
-    expect(row1Text({ running: true })).toContain("Esc to interrupt")
+    // The interrupt affordance lives above the composer, not in the footer.
+    expect(row1Text({ running: true })).not.toContain("Esc to interrupt")
     expect(row2Text({ running: true })).toBe("Context — · waiting for first response")
   })
 
   test("working, low context", () => {
     const text = row1Text({ running: true })
-    expect(text).toBe("~/project (main) · Working · Esc to interrupt · deepseek-chat · 128k window")
+    expect(text).toBe("~/project (main) · Working · deepseek-chat · 128k window")
   })
 
   test("completed shows the last run narrative and its totals", () => {
@@ -467,16 +476,16 @@ describe("narrow terminals drop run telemetry first", () => {
     const fitted = footerRowText(fitFooterRow(long, 48))
     expect(fitted).toContain("…")
     expect(fitted).toContain("(main)")
-    expect(fitted).toContain("Idle")
     // The model identity survives an ordinary narrow terminal.
     expect(fitted).toContain("128k window")
     expect(displayWidth(fitted)).toBeLessThanOrEqual(48)
   })
 
-  test("row 1 keeps state and branch even at a tiny width", () => {
-    const long = footerRows({ ...baseInput, cwd: "/home/dev/very/long/workspace/path/project" }).row1
+  test("row 1 keeps the active state and branch even at a tiny width", () => {
+    const long = footerRows({ ...runningInput, cwd: "/home/dev/very/long/workspace/path/project" }).row1
     const fitted = footerRowText(fitFooterRow(long, 16))
-    expect(fitted).toContain("Idle")
+    // The operation in progress and the branch are never dropped.
+    expect(fitted).toContain("Working")
     expect(fitted).toContain("(main)")
     expect(displayWidth(fitted)).toBeLessThanOrEqual(16)
   })
@@ -750,13 +759,16 @@ describe("a manual compaction is visibly in progress", () => {
   })
 
   test("clearing the transient returns the normal idle footer", () => {
-    expect(row1Text({ compacting: false })).toContain("Idle")
+    const text = row1Text({ compacting: false })
+    expect(text).not.toContain("Compacting")
+    expect(text).not.toContain("Idle")
+    expect(text).toBe("~/project (main) · deepseek-chat · 128k window")
     expect(row2Text({ compacting: false })).toContain("no run yet")
   })
 
   test("the compacting state is not shown once the run-summary is present", () => {
     // Guard against a stale flag leaking into the post-run footer.
     const text = row1Text({ compacting: false, running: false })
-    expect(text).toBe("~/project (main) · Idle · deepseek-chat · 128k window")
+    expect(text).toBe("~/project (main) · deepseek-chat · 128k window")
   })
 })

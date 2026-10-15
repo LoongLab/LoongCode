@@ -1,289 +1,193 @@
 import type { Component } from "@loongcode/tui"
-import { displayWidth, truncatePlain } from "../../projection"
-import { ansi } from "./theme"
+import { displayWidth } from "../../projection"
+import { LOONGCODE_VERSION } from "../../version"
+import { truncateVisible, wrapBody } from "./components"
+import { theme, type Style } from "./theme"
 
 /**
- * The human-facing hello banner shown at the top of an empty transcript.
+ * The Masthead: LoongCode's empty-state identity.
  *
- * This is the empty-state content of the transcript header: it is the first
- * item in the scroll region, so it scrolls away as conversation output grows
- * and returns when `/new` clears the transcript. It is not a splash screen, it
- * never blocks input, and it owns no lifecycle state.
+ * It is editorial rather than a splash screen: a left-aligned wordmark with the
+ * version set against the right edge, a hairline rule, and a workspace line
+ * carrying the branch and model. Below it sits the opening guidance — what the
+ * agent is, the commands that exist, and the keys that matter. Nothing is
+ * vertically centred; the masthead is a header, and the transcript grows beneath
+ * it. It holds no lifecycle of its own, never blocks input, and scrolls away
+ * with the transcript once a conversation exists.
  *
- * It is a *centered hero*, not a top-anchored header: the whole rendered group
- * (wordmark, descriptor, label and keyboard hints) is centered vertically
- * within the transcript viewport and horizontally by centering each hero line.
- * The transcript viewport height excludes the fixed bottom chrome, so the hero
- * is never centered against, nor allowed to overlap, the composer/footer.
- *
- * The wordmark is rendered from fixed, measured strings rather than handed to
- * `Text`, so terminal word-wrapping can never split a glyph: every line is
- * centered and padded to exactly the available width. The 5-row and 3-row
- * wordmarks are 47 and 33 columns; the single-line fallback is 8.
+ * Composition follows the design reference: content is inset two columns, and
+ * the rule spans exactly the text column. Every line is measured and padded to
+ * the full width, because escape sequences are style, not columns — widths are
+ * always taken on plain text and styling applied afterwards.
  */
 
-/**
- * The full 5-row LOONGCODE wordmark (53 columns).
- *
- * Drawn as nine 5-wide glyphs joined by one space, in the same letterforms the
- * wordmark has always used: every shared glyph (O, N, C, D, E) is carried over
- * unchanged, and only L and G are new. Every non-space glyph is one cell wide.
- */
-export const WORDMARK_5: readonly string[] = [
-	"█      ███   ███  █   █  ████  ████  ███  ████  █████",
-	"█     █   █ █   █ ██  █ █     █     █   █ █   █ █    ",
-	"█     █   █ █   █ █ █ █ █  ██ █     █   █ █   █ ███  ",
-	"█     █   █ █   █ █  ██ █   █ █     █   █ █   █ █    ",
-	"█████  ███   ███  █   █  ████  ████  ███  ████  █████",
-]
+/** The product wordmark shown in the masthead. */
+export const WORDMARK = "LoongCode"
 
-/**
- * The compact 3-row LOONGCODE wordmark (37 columns).
- *
- * The same nine letters in three rows. N and G take a 4-wide cell — the 3-row
- * font has always widened the letters that need it (M and N before it) — which
- * is what gives G room for the spur that keeps it distinct from C and O. Every
- * non-space glyph is one cell wide.
- */
-export const WORDMARK_3: readonly string[] = [
-	"█   ███ ███ █  █ ███▄ ███ ███ ██  ███",
-	"█   █ █ █ █ ██ █ █  █ █   █ █ █ █ ██ ",
-	"███ ███ ███ █ ██ ████ ███ ███ ██  ███",
-]
+/** The opening line, stated once; the masthead is the empty-workspace state. */
+export const READY_LINE = "Ready when you are. Describe a task, or type / for commands."
 
-/** The single-line fallback wordmark (9 columns). */
-const WORDMARK_SINGLE = "LOONGCODE"
-
-/** The product descriptor shown beneath the wordmark (27 columns). */
-export const DESCRIPTOR = "an opinionated coding agent"
-
-/** The always-visible keyboard hints, unchanged from the original header. */
+/** The always-visible keyboard hint. The full set lives behind `/help`. */
 export const KEYBOARD_HINTS =
-	"enter submit · alt+enter newline · esc interrupt · ctrl+c clear (twice exits) · ctrl+d exit · ctrl+o tools · ctrl+p model · pageup/pagedown scroll · /help commands"
+	"enter submit · alt+enter newline · esc interrupt · /help commands"
 
-const WORDMARK_5_WIDTH = 53
-const WORDMARK_3_WIDTH = 37
+/** The startup commands worth surfacing, aligned by command column. */
+const COMMANDS: ReadonlyArray<readonly [string, string]> = [
+	["/help", "all commands and keys"],
+	["/model", "switch the active model"],
+	["/session", "browse and resume sessions"],
+]
 
-/** Blank columns kept on each side when a multi-row wordmark is centered. */
-const SIDE_MARGIN = 2
+/** Command names are padded to this column so their descriptions line up. */
+const COMMAND_WIDTH = 10
 
 /** Rows owned by the fixed bottom chrome: composer (3) + two footer rows. */
 const FIXED_CHROME_ROWS = 5
 
-/** The banner treatments, largest first. */
-export type BannerTier = "large" | "medium" | "single"
-
 /**
  * Transcript rows available at idle: terminal rows minus the fixed bottom
- * chrome (composer + two footer rows). The interactive app measures the real
- * chrome live (a multiline composer or open picker shrinks the viewport); this
- * constant-chrome form is the idle-height budget the tier tests assert against.
+ * chrome. The idle-height budget trimming is measured against.
  */
 export function transcriptHeight(terminalRows: number): number {
 	return Math.max(0, Math.floor(terminalRows) - FIXED_CHROME_ROWS)
 }
 
-/**
- * Greedy word-wrap for plain (uncolored) text. A leading indentation run is
- * preserved on the first line. Matches the framework `Text` wrapping for the
- * header's content, but is applied here so the banner module owns the exact
- * line count used for its height budget.
- */
-export function wrapPlain(text: string, width: number): string[] {
-	const usable = Math.max(1, width)
-	const lead = /^\s+/.exec(text)?.[0] ?? ""
-	const words = text.slice(lead.length).split(/\s+/).filter(word => word.length > 0)
-	const lines: string[] = []
-	let line = ""
-	for (const word of words) {
-		const candidate = line === "" ? lead + word : `${line} ${word}`
-		if (displayWidth(candidate) <= usable) {
-			line = candidate
-			continue
-		}
-		if (line !== "") lines.push(line)
-		let rest = word
-		while (displayWidth(rest) > usable) {
-			let cut = ""
-			let used = 0
-			for (const ch of rest) {
-				const cw = displayWidth(ch)
-				if (used + cw > usable) break
-				cut += ch
-				used += cw
-			}
-			if (cut === "") cut = rest[0] ?? ""
-			lines.push(cut)
-			rest = rest.slice(cut.length)
-		}
-		line = rest
-	}
-	if (line !== "") lines.push(line)
-	return lines.length > 0 ? lines : [lead]
-}
+/** Content is inset this many columns on both sides of the masthead. */
+const EDGE = 2
 
-/** Pads styled content to a full width, given its already-measured visible width. */
-function padTo(width: number, content: string, visible: number): string {
-	return content + " ".repeat(Math.max(0, width - visible))
-}
-
-/** A left-aligned, width-clipped, styled line. */
-function leftLine(text: string, style: (value: string) => string, width: number): string {
-	const clipped = displayWidth(text) > width ? truncatePlain(text, width) : text
-	return padTo(width, style(clipped), displayWidth(clipped))
-}
-
-/** A centered, width-clipped, styled line. */
-function centerLine(text: string, style: (value: string) => string, width: number): string {
-	const clipped = displayWidth(text) > width ? truncatePlain(text, width) : text
-	const visible = displayWidth(clipped)
-	const left = Math.max(0, Math.floor((width - visible) / 2))
-	return " ".repeat(left) + style(clipped) + " ".repeat(Math.max(0, width - left - visible))
-}
-
-/** A blank line padded to a full width. */
-function blankLine(width: number): string {
-	return " ".repeat(width)
-}
-
-/** Renders fixed-width wordmark rows, centered as a block so columns stay aligned. */
-function renderArt(art: readonly string[], artWidth: number, width: number): string[] {
-	const offset = Math.max(0, Math.floor((width - artWidth) / 2))
-	return art.map(row => {
-		const left = Math.min(offset, Math.max(0, width))
-		const clipped = displayWidth(row) > width - left ? truncatePlain(row, Math.max(0, width - left)) : row
-		const visible = displayWidth(clipped)
-		return " ".repeat(left) + ansi.bold(ansi.cyan(clipped)) + " ".repeat(Math.max(0, width - left - visible))
-	})
-}
-
-/** Inputs to the deterministic tier choice. */
-export interface BannerTierInput {
-	readonly width: number
-	readonly availableHeight: number
-	readonly labelRows: number
-	readonly hintRows: number
+/** A styled span of one line. Widths are always measured on `text`. */
+interface Segment {
+	readonly text: string
+	readonly style: Style
 }
 
 /**
- * Chooses the largest treatment whose full composition fits both the available
- * width and the available transcript height. Thresholds are derived from the
- * measured wordmark widths plus a fixed side margin, not a fixed column count.
+ * Renders one line: segments concatenated, then padded to exactly `width`.
+ * Each segment is clipped to the room remaining, so no composition can ever
+ * emit a line wider than the terminal however narrow it is.
  */
-export function selectBannerTier(input: BannerTierInput): BannerTier {
-	const { width, availableHeight, labelRows, hintRows } = input
-	// After the wordmark: a blank, the descriptor + a blank when it fits, then
-	// the label; the hints follow. Kept identical to the full composition below.
-	const afterArtRows = displayWidth(DESCRIPTOR) <= width ? 3 : 1
-	const full = (artRows: number): number => artRows + afterArtRows + labelRows + hintRows
-	if (width >= WORDMARK_5_WIDTH + SIDE_MARGIN * 2 && full(WORDMARK_5.length) <= availableHeight) {
-		return "large"
+function renderSegments(width: number, segments: readonly Segment[]): string {
+	let plainText = ""
+	let out = ""
+	for (const segment of segments) {
+		const text = clip(segment.text, Math.max(0, width - displayWidth(plainText)))
+		out += segment.style(text)
+		plainText += text
 	}
-	if (width >= WORDMARK_3_WIDTH + SIDE_MARGIN * 2 && full(WORDMARK_3.length) <= availableHeight) {
-		return "medium"
-	}
-	return "single"
+	return out + " ".repeat(Math.max(0, width - displayWidth(plainText)))
+}
+
+/** Clips plain text to `max` columns, marking the cut with a trailing `…`. */
+function clip(text: string, max: number): string {
+	if (max <= 0) return ""
+	return truncateVisible(text, max)
+}
+
+/**
+ * A line with `left` at the left margin and `right` set against the right
+ * margin. The left wins: the right is clipped to what remains after at least
+ * one separating column, and dropped entirely when the two cannot share a line.
+ */
+function spread(width: number, left: string, right: string, leftStyle: Style, rightStyle: Style): string {
+	const room = Math.max(0, width - EDGE * 2)
+	const l = clip(left, room)
+	const budget = room - displayWidth(l)
+	const r = budget >= 2 ? clip(right, budget - 1) : ""
+	const gap = " ".repeat(Math.max(0, budget - displayWidth(r)))
+	return renderSegments(width, [
+		{ text: " ".repeat(EDGE), style: (t) => t },
+		{ text: l, style: leftStyle },
+		{ text: gap, style: (t) => t },
+		{ text: r, style: rightStyle },
+	])
+}
+
+/** The hairline rule spanning the text column. */
+function rule(width: number): string {
+	return renderSegments(width, [{ text: " ".repeat(EDGE) + "─".repeat(Math.max(0, width - EDGE * 2)), style: theme.structure }])
+}
+
+/** A blank line padded to the full width. */
+function blank(width: number): string {
+	return " ".repeat(Math.max(0, width))
+}
+
+/** An inset left-aligned block, wrapped so no guidance is silently cut. */
+function inset(width: number, text: string, style: Style): string[] {
+	const content = Math.max(1, width - EDGE * 2)
+	return wrapBody(text, content).map(line =>
+		renderSegments(width, [{ text: " ".repeat(EDGE), style: (t) => t }, { text: line, style }]),
+	)
 }
 
 export interface HelloHeaderInput {
 	readonly width: number
 	/** Transcript viewport rows: terminal height minus the fixed bottom chrome. */
 	readonly availableHeight: number
-	/** Workspace path, or a resumed session id — whatever the old title line showed. */
+	/** Workspace path, or a resumed session id — whatever identifies the session. */
 	readonly label: string
-	/** The keyboard-hints line, unwrapped. */
+	/** The keyboard hint line, unwrapped. */
 	readonly hints: string
+	/** Product version, set against the masthead's right edge. */
+	readonly version?: string
+	/** Current git branch, when the workspace is a repository. */
+	readonly branch?: string
+	/** Active model identity. */
+	readonly model?: string
+}
+
+/** The masthead block: wordmark, rule, and the workspace/branch/model line. */
+function masthead(width: number, input: HelloHeaderInput): string[] {
+	const version = input.version ?? LOONGCODE_VERSION
+	const context = [input.branch, input.model].filter((v): v is string => v !== undefined && v.length > 0).join("  ·  ")
+	return [
+		blank(width),
+		spread(width, WORDMARK, version, (t) => theme.accentBold(t), theme.faint),
+		rule(width),
+		spread(width, input.label, context, theme.secondary, theme.muted),
+	]
 }
 
 /**
- * Centers a rendered hero group vertically within a transcript viewport by
- * prepending blank lines. Horizontal centering is already built into every
- * group line. A group taller than the viewport is top-anchored (never pushed
- * out of the top); an odd row of slack falls below the group.
- */
-function centerVertically(group: string[], height: number, width: number): string[] {
-	const top = Math.max(0, Math.floor((height - group.length) / 2))
-	if (top === 0) return group
-	return [...Array.from({ length: top }, () => blankLine(width)), ...group]
-}
-
-/**
- * Renders the complete empty-state hero: wordmark, descriptor, label, hints,
- * centered as one group inside the transcript viewport.
- *
- * The richest composition that fits the viewport is chosen first; each fallback
- * drops one layer (spacing, descriptor, then label) while keeping the wordmark
- * and hints together, and only drops the hints when they cannot fit alongside
- * the wordmark at all. Fitting the group is what lets it be centered rather
- * than clipped off-screen. Every returned line is exactly the available width,
- * so no downstream text wrapping can split the wordmark.
+ * Renders the empty-state masthead plus the richest opening guidance that fits
+ * the viewport. Each fallback drops one layer — the keyboard hints, then the
+ * command list, then the spacing — while always keeping the masthead itself.
  */
 export function renderHelloHeader(input: HelloHeaderInput): string[] {
 	const width = Math.max(1, Math.floor(input.width))
 	const height = Math.max(0, Math.floor(input.availableHeight))
-	const hintLines = wrapPlain(`  ${input.hints}`, width)
-	const labelLines = wrapPlain(`  ${input.label}`, width)
-	const tier = selectBannerTier({
-		width,
-		availableHeight: height,
-		labelRows: labelLines.length,
-		hintRows: hintLines.length,
-	})
 
-	const artLines = tier === "large"
-		? renderArt(WORDMARK_5, WORDMARK_5_WIDTH, width)
-		: tier === "medium"
-			? renderArt(WORDMARK_3, WORDMARK_3_WIDTH, width)
-			: [centerLine(WORDMARK_SINGLE, value => ansi.bold(ansi.cyan(value)), width)]
+	const head = masthead(width, input)
+	const ready = inset(width, READY_LINE, theme.primary)
+	const commands = COMMANDS.map(([command, description]) =>
+		renderSegments(width, [
+			{ text: " ".repeat(EDGE), style: (t) => t },
+			{ text: command.padEnd(COMMAND_WIDTH), style: theme.accent },
+			{ text: description, style: theme.faint },
+		]),
+	)
+	const hintLines = inset(width, input.hints, theme.muted)
 
-	const descLine = displayWidth(DESCRIPTOR) <= width
-		? centerLine(DESCRIPTOR, value => ansi.gray(value), width)
-		: null
-	const styledLabel = labelLines.map(line => leftLine(line, value => ansi.gray(value), width))
-	const styledHints = hintLines.map(line => leftLine(line, value => ansi.gray(value), width))
-
-	// Richest composition first, as the tier selector budgets for: wordmark,
-	// descriptor, label, then hints.
-	const full = [
-		...artLines,
-		blankLine(width),
-		...(descLine !== null ? [descLine, blankLine(width)] : []),
-		...styledLabel,
-		...styledHints,
+	const compositions: string[][] = [
+		[...head, blank(width), ...ready, blank(width), ...commands, blank(width), ...hintLines],
+		[...head, blank(width), ...ready, blank(width), ...commands],
+		[...head, blank(width), ...ready],
+		head,
 	]
-	// Short terminals: keep the wordmark and hints, dropping spacing, descriptor,
-	// then the label before giving up on the brand.
-	const noGaps = [
-		...artLines,
-		...(descLine !== null ? [descLine] : []),
-		...styledLabel,
-		...styledHints,
-	]
-	const brandAndHints = [...artLines, ...styledHints]
-
-	// Only drop the hints when even the wordmark plus hints cannot fit: a
-	// centered single-line wordmark reads as the hero, whereas an overflowing
-	// group would be clipped and land back at the top.
-	const group = full.length <= height
-		? full
-		: noGaps.length <= height
-			? noGaps
-			: brandAndHints.length <= height
-				? brandAndHints
-				: artLines
-
-	return centerVertically(group, height, width)
+	for (const composition of compositions) {
+		if (composition.length <= height) return composition
+	}
+	// Shorter than even the masthead: anchor it and clip from the bottom.
+	return head.slice(0, Math.max(0, height))
 }
 
 /**
- * Width- and height-aware empty-state header component.
+ * Width- and height-aware masthead component.
  *
- * `visible` is a live empty-state predicate: the caller supplies the session
- * condition, and it is re-read on every render because both the session and the
- * run state can change without the component being rebuilt. Height is likewise
- * read lazily from the live terminal so it reflects resizes without any
- * lifecycle state. A false predicate yields zero rows, so the hero is absent
- * from the transcript rather than scrolled out of view.
+ * `visible` is a live empty-state predicate re-read on every render; a false
+ * predicate yields zero rows so the masthead is absent from the transcript
+ * rather than scrolled out of view. Branch and model are functions because they
+ * are resolved after the component is built and can change under a live session.
  */
 export class HelloHeader implements Component {
 	constructor(
@@ -291,12 +195,9 @@ export class HelloHeader implements Component {
 			label: string
 			hints: string
 			availableHeight: () => number
-			/**
-			 * Whether the hero should render at all. When it returns false the
-			 * component contributes zero rows. Defaults to always visible, so a
-			 * caller that does not supply an empty-state condition renders the
-			 * banner unconditionally.
-			 */
+			version?: string
+			branch?: () => string | undefined
+			model?: () => string | undefined
 			visible?: () => boolean
 		},
 	) {}
@@ -311,15 +212,21 @@ export class HelloHeader implements Component {
 			availableHeight: this.options.availableHeight(),
 			label: this.options.label,
 			hints: this.options.hints,
+			version: this.options.version,
+			branch: this.options.branch?.(),
+			model: this.options.model?.(),
 		})
 	}
 }
 
-/** Builds the interactive TUI's empty-state header. */
+/** Builds the interactive TUI's masthead. */
 export function helloHeader(options: {
 	label: string
 	hints: string
 	availableHeight: () => number
+	version?: string
+	branch?: () => string | undefined
+	model?: () => string | undefined
 	visible?: () => boolean
 }): Component {
 	return new HelloHeader(options)

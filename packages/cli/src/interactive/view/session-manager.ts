@@ -1,5 +1,5 @@
 import { Box, Container, TruncatedText, type Component } from "@loongcode/tui"
-import { ansi, surface } from "./theme"
+import { ansi, surface, theme } from "./theme"
 import { filterSessions, relatedSessions, type ScopedSessionSummary } from "../session/scope"
 
 /**
@@ -239,35 +239,35 @@ export class SessionManager implements Component {
 		this.container.addChild(new TruncatedText(`  ${ansi.bold(this.title)}`, 0, 0))
 
 		if (this.mode === "search") {
-			this.container.addChild(new TruncatedText(`  ${ansi.gray("/")}${this.query}`, 0, 0))
+			this.container.addChild(new TruncatedText(`  ${theme.muted("/")}${this.query}`, 0, 0))
 		}
 		if (this.mode === "related" && this.relatedParentId !== null) {
 			const parent = this.sessions.find(session => session.id === this.relatedParentId)
-			this.container.addChild(new TruncatedText(`  ${ansi.gray(`Related · ${parent !== undefined ? this.labelOf(parent) : ""}`)}`, 0, 0))
+			this.container.addChild(new TruncatedText(`  ${theme.muted(`Related · ${parent !== undefined ? this.labelOf(parent) : ""}`)}`, 0, 0))
 		}
 		if (this.mode === "confirm" && this.pendingDeleteId !== null) {
 			const target = this.sessions.find(session => session.id === this.pendingDeleteId)
 			const label = target !== undefined ? this.labelOf(target) : this.pendingDeleteId
-			this.container.addChild(new TruncatedText(`  ${ansi.red(`Delete "${label}"? This cannot be undone.`)}`, 0, 0))
+			this.container.addChild(new TruncatedText(`  ${theme.failure(`Delete "${label}"? This cannot be undone.`)}`, 0, 0))
 		}
 
 		if (items.length === 0) {
-			this.container.addChild(new TruncatedText(`  ${ansi.gray(this.emptyText())}`, 0, 0))
+			this.container.addChild(new TruncatedText(`  ${theme.muted(this.emptyText())}`, 0, 0))
 		}
 		for (let i = start; i < end; i++) {
 			const session = items[i]!
 			const selected = i === this.index
-			const marker = selected ? ansi.green("❯ ") : "  "
+			const marker = selected ? theme.selected("❯ ") : "  "
 			const current = session.id === this.currentId ? "• " : session.parentSessionId !== null ? "↳ " : "  "
 			const label = selected ? ansi.bold(this.labelOf(session)) : this.labelOf(session)
-			const description = ` ${ansi.gray(`${session.messageCount} msgs · ${new Date(session.updatedAt).toLocaleString()}`)}`
+			const description = ` ${theme.muted(`${session.messageCount} msgs · ${new Date(session.updatedAt).toLocaleString()}`)}`
 			this.container.addChild(new TruncatedText(`${marker}${current}${label}${description}`, 0, 0))
 		}
 
 		if (this.message !== null) {
-			this.container.addChild(new TruncatedText(`  ${ansi.yellow(this.message)}`, 0, 0))
+			this.container.addChild(new TruncatedText(`  ${theme.warning(this.message)}`, 0, 0))
 		}
-		this.container.addChild(new TruncatedText(`  ${ansi.gray(this.hintText())}`, 0, 0))
+		this.container.addChild(new TruncatedText(`  ${theme.muted(this.hintText())}`, 0, 0))
 	}
 
 	private emptyText(): string {

@@ -356,8 +356,9 @@ describe("the gate", () => {
 		expect(view).toContain("Select API protocol")
 		expect(slotHoldsEditor(h)).toBe(false)
 		// No banner, no composer, no idle state: none of the workspace is here.
-		expect(view).not.toContain("an opinionated coding agent")
-		expect(view).not.toContain("Idle")
+		expect(view).not.toContain("Ready when you are")
+		// The workspace footer (its context row) is not present during setup.
+		expect(view).not.toContain("Context")
 		// The footer states the one fact that matters, and nothing it measured.
 		expect(view).toContain("no model")
 		expect(view).toContain("Model setup in progress")
@@ -388,7 +389,7 @@ describe("the gate", () => {
 		expect(slotHoldsEditor(h)).toBe(true)
 		// Suppression belongs to setup alone: a configured user still gets the
 		// startup banner they always had.
-		expect(view).toContain("an opinionated coding agent")
+		expect(view).toContain("Ready when you are")
 		expect(view).toContain("probe")
 		expect(view).toContain("128k window")
 		expect(rejections).toEqual([])
@@ -447,7 +448,7 @@ describe("the gate", () => {
 			expect(view).not.toContain("the earlier task")
 			// No banner either: the setup screen is composed instead of the
 			// empty-workspace hero, not on top of it.
-			expect(view).not.toContain("an opinionated coding agent")
+			expect(view).not.toContain("Ready when you are")
 			expect(view).toContain("Select API protocol")
 			expect(phaseOf(resumed)).toBe("setup")
 			expect(rejections).toEqual([])
@@ -476,7 +477,7 @@ describe("the gate", () => {
 			expect(view).not.toContain("no run yet")
 			expect(view).not.toContain("Context")
 			expect(view).not.toContain("auto-compact")
-			expect(view).not.toContain("Idle")
+			expect(view).not.toContain("Working")
 			// What is left is neutral and true.
 			expect(view).toContain("Model setup in progress")
 			expect(view).toContain("no model")
@@ -511,7 +512,7 @@ describe("the gate", () => {
 			expect(phaseOf(h)).toBe("normal")
 			expect(after).toContain("last run")
 			expect(after).not.toContain("Model setup in progress")
-			expect(after).toContain("Idle")
+			expect(after).toContain("Context")
 			expect(after).toContain("Context")
 			// And the task that was held comes back with it, unrun.
 			expect(composer(h)).toBe("a held task")
@@ -925,7 +926,7 @@ describe("the model test", () => {
 			expect(view).toContain("probe: could not write models.json")
 			// No success is claimed, and the workspace is not entered.
 			expect(phaseOf(h)).toBe("setup")
-			expect(view).not.toContain("Idle")
+			expect(view).not.toContain("Context")
 			expect(existsSync(modelsFile())).toBe(false)
 			expect(rejections).toEqual([])
 		} finally {
@@ -1088,7 +1089,9 @@ describe("recovery", () => {
 			await type(h, "do the thing")
 			const view = screen(h)
 			expect(view).toContain("probe: run prelude failure")
-			expect(view).toContain("Idle")
+			// The workspace is open again and no run is active; the footer names no
+			// operation (idle has no label of its own).
+			expect(phaseOf(h)).toBe("normal")
 			expect(view).not.toContain("Working")
 
 			// And the next task is a task, not a steering instruction.
@@ -1330,7 +1333,7 @@ describe("opening the gate", () => {
 			// is active, but nothing the workspace produced is reported.
 			expect(failed).toContain("Model setup in progress")
 			expect(failed).not.toContain("last run")
-			expect(failed).not.toContain("Idle")
+			expect(failed).not.toContain("Context")
 			expect(h.session.messages.filter(m => m.role === "user").length).toBe(1)
 			expect(rejections).toEqual([])
 
@@ -1344,7 +1347,7 @@ describe("opening the gate", () => {
 			expect(composer(h)).toBe("fix the failing test")
 			// The footer comes back with the transition.
 			expect(screen(h)).toContain("last run")
-			expect(screen(h)).toContain("Idle")
+			expect(screen(h)).not.toContain("Working")
 			expect(h.session.messages.filter(m => m.role === "user").length).toBe(1)
 			expect(rejections).toEqual([])
 		} finally {

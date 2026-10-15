@@ -13,6 +13,7 @@ export {
 	type TUI,
 } from "./tui.ts"
 export { ProcessTerminal, type Terminal } from "./terminal.ts"
+export { getTerminalColorMode } from "./terminal-image.ts"
 export { matchesKey } from "./keys.ts"
 export type { AutocompleteProvider, AutocompleteSuggestions, AutocompleteItem } from "./autocomplete.ts"
 export { Editor, type EditorTheme } from "./components/editor.ts"
@@ -30,3 +31,6 @@ export {
 	type ScrollViewScrollbar,
 	type ScrollViewScrollToOptions,
 } from "./components/scroll-view.ts"
+export { WindowedStack } from "./components/windowed-stack.ts"
+export { WINDOWED, getWindowed, type WindowedContent, type WindowedComponent } from "./layout-node.ts"
+export type { ScrollContent } from "./layout.ts"

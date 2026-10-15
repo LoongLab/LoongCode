@@ -1,5 +1,5 @@
 import { Box, Container, TruncatedText, type Component } from "@loongcode/tui"
-import { ansi, surface } from "./theme"
+import { ansi, surface, theme } from "./theme"
 
 export interface SelectorItem {
   readonly value: string
@@ -102,12 +102,12 @@ export class Selector implements Component {
     for (let i = start; i < end; i++) {
       const item = this.items[i]!
       const selected = i === this.index
-      const marker = selected ? ansi.green("❯ ") : "  "
+      const marker = selected ? theme.selected("❯ ") : "  "
       const label = selected ? ansi.bold(item.label) : item.label
-      const description = item.description !== undefined ? ` ${ansi.gray(item.description)}` : ""
+      const description = item.description !== undefined ? ` ${theme.muted(item.description)}` : ""
       this.container.addChild(new TruncatedText(`${marker}${label}${description}`, 0, 0))
     }
-    this.container.addChild(new TruncatedText(ansi.gray("  ↑/↓ move · enter select · esc cancel"), 0, 0))
+    this.container.addChild(new TruncatedText(theme.muted("  ↑/↓ move · enter select · esc cancel"), 0, 0))
   }
 
   handleInput(data: string): void {

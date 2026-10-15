@@ -23,15 +23,34 @@ export class FixedLines implements Component {
 	invalidate(): void {}
 }
 
-/** A component whose line count can grow, to simulate streamed transcript output. */
+/**
+ * A component whose line count can grow, to simulate streamed transcript output.
+ *
+ * Growing the count is a content mutation, so it announces itself through
+ * `onChange` — the same contract the real transcript follows, where a windowed
+ * container caches each child's height and must be told when one changes.
+ */
 export class GrowableLines implements Component {
-	constructor(
-		public count: number,
-		private readonly tag = "chat",
-	) {}
+	private lines: number
+	/** Called when `count` changes, so the parent can re-measure this child. */
+	onChange?: () => void
+
+	constructor(count: number, private readonly tag = "chat") {
+		this.lines = count
+	}
+
+	get count(): number {
+		return this.lines
+	}
+
+	set count(value: number) {
+		if (value === this.lines) return
+		this.lines = value
+		this.onChange?.()
+	}
 
 	render(_width: number): string[] {
-		return Array.from({ length: this.count }, (_, index) => `${this.tag}-${index}`)
+		return Array.from({ length: this.lines }, (_, index) => `${this.tag}-${index}`)
 	}
 
 	invalidate(): void {}
@@ -192,6 +211,10 @@ export class TuiHarness {
 			footerRow2: this.footerRow2,
 		})
 		this.scroll = layout.scroll
+		// A synthetic content growth is a mutation of the transcript: announce it
+		// so the windowed stack re-measures, exactly as the real application does.
+		this.chat.onChange = () => layout.transcript.invalidateChild(this.chat)
+		this.header.onChange = () => layout.transcript.invalidateChild(this.header)
 		this.tui.setLayoutRoot(layout.root)
 		this.tui.setFocus(this.editor)
 	}

@@ -5,6 +5,7 @@ import {
 	Markdown,
 	Text,
 	TuiAltScreen,
+	WindowedStack,
 	ProcessTerminal,
 	type Terminal,
 	matchesKey,
@@ -19,7 +20,7 @@ import type { Checkpoint, LoongCode, RewindNote, RunEvent, Session, SessionMessa
 import { CheckpointStore } from "@loongcode/agent"
 import { discardTurns, liveCheckpoints, recordRewind, rewindSession, summarizeRange, turnIndexOf, type CheckpointAdvance } from "@loongcode/agent"
 import { configDir, listPromptTemplates, loadSettings } from "@loongcode/agent"
-import { ansi, markdownTheme } from "./view/theme"
+import { ansi, initTheme, markdownTheme, setThemeScheme, theme } from "./view/theme"
 import {
 	NO_RUN_DISPLAY,
 	compactionNoticeText,
@@ -40,11 +41,12 @@ import { SessionManager, type SessionManagerAction } from "./view/session-manage
 import { workspaceSessions, type ScopedSessionSummary } from "./session/scope"
 import { cloneSession, forkCandidates, forkSession } from "./session/operations"
 import { LoongCodeAutocomplete } from "./input/autocomplete"
-import { argumentPlaceholderFor } from "./input/argument-placeholder"
+import { composerGhostText } from "./input/argument-placeholder"
 import { altEnterAsNewline } from "./input/alt-enter"
 import { expandFileReferences } from "./input/expand"
 import { COMMANDS, findCommand, type Command, type CommandContext, type CompactResult } from "./commands"
 import {
+	IterationBlock,
 	ToolExecutionComponent,
 	assistantMessage,
 	errorNotice,
@@ -234,6 +236,30 @@ function truncateForRow(text: string): string {
  * and only needs to choose one.
  */
 const NO_MODEL_NOTICE = "No model is active — use /model to choose or add one."
+
+/**
+ * The composer's prompt gutter. The same chevron the transcript uses for a
+ * submitted task, so the input reads as where a task is written and its
+ * continuation lines align under the text column rather than repeating it.
+ */
+export const COMPOSER_PROMPT = "❯ "
+
+/**
+ * The composer's placeholder, shown while the input is empty. It names the one
+ * affordance the empty input area has — that it accepts a message — and is
+ * otherwise inert (render-only; never submitted). It deliberately does not
+ * repeat the ready-state guidance the masthead states: while the transcript is
+ * empty the two are on screen together, and the same sentence twice reads as a
+ * defect rather than emphasis.
+ */
+export const COMPOSER_PLACEHOLDER = "Type a message…"
+
+/**
+ * Below this many terminal rows the footer's usage row is retracted. It is the
+ * same threshold the row has always used; what changed is that it is now read at
+ * render time, so a resize enforces it immediately.
+ */
+export const FOOTER_ROW2_MIN_ROWS = 14
 
 /**
  * The two answers the gate's recovery picker can give. Control-character
@@ -528,7 +554,22 @@ function workspaceIssue(cwd: string): string | null {
 
 export class LoongCodeTui {
 	private readonly tui: TuiAltScreen
-	private readonly chat = new Container()
+	/**
+	 * The conversation stack. Windowed: the viewport is laid out from the
+	 * logical row count and only the visible window is rendered, so a long
+	 * conversation costs the window rather than its whole length. Its content
+	 * changes are announced with `invalidateChild` (see the run-event adapter),
+	 * because the stack cannot see a child's mutation on its own.
+	 */
+	private readonly chat = new WindowedStack()
+	/** The transcript stack (header + chat) inside the scroll view, for header invalidation. */
+	private transcript: WindowedStack | null = null
+	/**
+	 * The masthead header. Its height is not fixed: it renders the empty-state
+	 * banner while the session holds no messages and zero rows afterwards, so
+	 * its cached height is invalidated when that visibility flips.
+	 */
+	private header: Component | null = null
 	/** File checkpoints for `/rewind`, stored beside the session. */
 	private readonly checkpointStore: CheckpointStore
 	private readonly status = new Container()
@@ -551,7 +592,13 @@ export class LoongCodeTui {
 	 */
 	private readonly editorSlot = new Container()
 	private readonly footerRow1 = new FooterLineView()
-	private readonly footerRow2 = new FooterLineView()
+	/**
+	 * The usage row retracts on a short terminal so the transcript and composer
+	 * keep usable space. Visibility is decided at render time from the live
+	 * terminal height, so a resize alone retracts it and the conversation
+	 * immediately regains the row (see {@link FooterLineView}).
+	 */
+	private readonly footerRow2 = new FooterLineView(() => this.tui.terminal.rows > FOOTER_ROW2_MIN_ROWS)
 	/** Bottom-attached transient picker, rendered directly above the composer. */
 	private readonly picker: PickerSlot
 
@@ -623,9 +670,28 @@ export class LoongCodeTui {
 	private modelLimits: ModelLimits | undefined
 	private compactThresholdPct: number | undefined
 	private gitBranch: string | undefined
-	private readonly pendingTools = new Map<string, ToolExecutionComponent>()
+	/**
+	 * A pending tool, with the block that holds it. The block is kept so a
+	 * progress update, a result, or an interruption can announce the height
+	 * change to the windowed conversation stack.
+	 */
+	private readonly pendingTools = new Map<string, { component: ToolExecutionComponent; block: IterationBlock }>()
 	private streaming: Container | null = null
 	private streamingText = ""
+	/**
+	 * The renderer for the message currently streaming, held so each delta can
+	 * update it in place rather than rebuild it. Present only while `streaming`
+	 * is, and dropped with it when the message is finalized.
+	 */
+	private streamingMarkdown: Markdown | null = null
+	/** The iteration block the live run is currently filling, if any. */
+	private currentBlock: IterationBlock | null = null
+	/**
+	 * The live model iteration number, from `iteration_start`. Undefined between
+	 * runs and after replay: it is never invented to fill a gap the runtime did
+	 * not report.
+	 */
+	private currentIteration: number | undefined = undefined
 	private selector: Selector | null = null
 	/** The open `/session` manager, which owns input while present. */
 	private manager: SessionManager | null = null
@@ -635,9 +701,22 @@ export class LoongCodeTui {
 
 	constructor(private readonly options: LoongCodeTuiOptions) {
 		this.checkpointStore = new CheckpointStore(options.agent.sessionsDir)
+		// The setup panel changes its own content while it is hosted in the
+		// windowed conversation stack, so it announces its changes there.
+		this.setupPanel.onChange = () => this.chat.invalidateChild(this.setupPanel)
 		// A fullscreen viewport owns the screen: the conversation scrolls in-app
 		// while the composer/status/footer stay pinned to the bottom.
 		this.tui = new TuiAltScreen(options.terminal ?? new ProcessTerminal(), false, undefined, { mouse: true })
+		// The theme resolves its depth from the real terminal and follows the
+		// terminal's own light/dark reports. A terminal that never reports keeps
+		// the dark default; the flag is enabled so a mid-session theme switch is
+		// honoured without a restart.
+		initTheme()
+		this.tui.setTerminalColorSchemeNotifications(true)
+		this.tui.onTerminalColorSchemeChange(scheme => {
+			setThemeScheme(scheme)
+			this.tui.requestRender()
+		})
 		this.session = options.session
 
 		// The header is the transcript's true empty state: the hello banner is
@@ -656,6 +735,11 @@ export class LoongCodeTui {
 			label: options.label ?? this.session.cwd,
 			hints: KEYBOARD_HINTS,
 			availableHeight: () => this.transcriptViewportHeight(),
+			// The masthead carries the workspace's identity. Branch and model are
+			// read live and may be unresolved on the first frame; an absent value
+			// simply drops out of the context line rather than printing a blank.
+			branch: () => this.gitBranch,
+			model: () => this.modelId,
 			// The hero is the empty *workspace* state, so it is decided here,
 			// where the frame is composed — not rendered and then hidden. While
 			// the gate is closed there is no workspace to be empty, and the
@@ -680,8 +764,10 @@ export class LoongCodeTui {
 			footerRow2: this.footerRow2,
 		})
 		this.tui.setLayoutRoot(layout.root)
+		this.transcript = layout.transcript
+		this.header = header
 
-		this.loader = new Loader(this.tui, ansi.cyan, (text) => ansi.bold(text), "working… (esc to interrupt)")
+		this.loader = new Loader(this.tui, theme.running, (text) => ansi.bold(text), "working… (esc to interrupt)")
 		this.tui.addInputListener(data => this.handleGlobalInput(data))
 
 		this.commandContext = this.buildCommandContext()
@@ -966,22 +1052,28 @@ export class LoongCodeTui {
 		const editor = new Editor(
 			this.tui,
 			{
-				borderColor: (text) => ansi.gray(text),
+				borderColor: (text) => theme.faint(text),
 				selectList: {
-					selectedPrefix: (text) => ansi.green(text),
+					selectedPrefix: (text) => theme.selected(text),
 					selectedText: (text) => ansi.bold(text),
-					description: (text) => ansi.gray(text),
-					scrollInfo: (text) => ansi.gray(text),
-					noMatch: (text) => ansi.red(text),
+					description: (text) => theme.muted(text),
+					scrollInfo: (text) => theme.faint(text),
+					noMatch: (text) => theme.failure(text),
 				},
 			},
-			{ ghostTextStyle: (text) => ansi.gray(text) },
+			{ ghostTextStyle: (text) => theme.muted(text) },
 		)
+		// The composer's prompt gutter and placeholder are the workspace input's
+		// presentation; setup replaces the editor with its own field (see
+		// `updateEditorSlot`), so they are set here and toggled with the phase.
+		editor.setPrompt(COMPOSER_PROMPT)
 		editor.setAutocompleteProvider(new LoongCodeAutocomplete(
 			() => autocompleteItems(this.session.cwd),
 			() => this.session.cwd,
 		))
-		editor.setGhostTextProvider(state => argumentPlaceholderFor(state, COMMANDS))
+		editor.setGhostTextProvider(state =>
+			composerGhostText(state, COMMANDS, this.phase === "normal" ? COMPOSER_PLACEHOLDER : undefined),
+		)
 		editor.onSubmit = (text: string) => {
 			void this.submit(text)
 		}
@@ -1058,6 +1150,9 @@ export class LoongCodeTui {
 			for (const component of this.chat.children) {
 				if (component instanceof ToolExecutionComponent) component.setExpanded(this.toolsExpanded)
 			}
+			// A tool's rendered height depends on its expansion, so the
+			// conversation stack must re-measure after the toggle.
+			this.chat.invalidate()
 			this.tui.requestRender()
 			return { consume: true }
 		}
@@ -1212,6 +1307,9 @@ export class LoongCodeTui {
 		}
 
 		this.chat.addChild(userMessage(text))
+		// The first message hides the empty-state masthead; its cached height
+		// must not survive into the conversation.
+		this.invalidateHeader()
 		await this.startRun(expandFileReferences(text, this.session.cwd))
 	}
 
@@ -1817,6 +1915,7 @@ export class LoongCodeTui {
 		// The commit: no `await`, nothing that can throw.
 		this.chat.clear()
 		for (const component of transcript) this.chat.addChild(component)
+		this.invalidateHeader()
 		this.warning.clear()
 		if (warning !== null) this.warning.addChild(warning)
 		this.editor.disableSubmit = false
@@ -1876,6 +1975,10 @@ export class LoongCodeTui {
 	 */
 	private updateEditorSlot(): void {
 		this.editorSlot.clear()
+		// The composer's prompt gutter belongs to the workspace input, not to the
+		// setup field it is also used as; it is present exactly while the gate is
+		// open.
+		this.editor.setPrompt(this.phase === "normal" ? COMPOSER_PROMPT : undefined)
 		if (this.phase === "setup") {
 			// Setup owns the screen: the list or the field is part of the setup
 			// panel, and the composer slot stays empty — there is no workspace
@@ -1903,6 +2006,7 @@ export class LoongCodeTui {
 		this.abort = new AbortController()
 
 		let aborted = false
+		let termination: "aborted" | "error" | "complete" = "complete"
 		try {
 			// The model is resolved per run, so the footer's budget is refreshed
 			// here: a switch made by /model or Ctrl-P must not leave it stale.
@@ -1917,13 +2021,22 @@ export class LoongCodeTui {
 				onEvent: event => this.handleRunEvent(event),
 			})
 			aborted = result.aborted
+			if (aborted) termination = "aborted"
 			if (aborted) this.chat.addChild(notice("run aborted"))
 		} catch (err) {
+			termination = "error"
 			this.chat.addChild(errorNotice(err instanceof Error ? err.message : String(err)))
 		} finally {
 			this.running = false
 			this.abort = null
 			this.finalizeStreaming()
+			// A run that terminated abnormally (abort or error) may leave a tool
+			// whose result never arrived still showing `running`. Mark exactly
+			// those interrupted; a normal completion has already resolved every
+			// call, so nothing is relabelled.
+			if (termination !== "complete") this.settlePendingTools(termination)
+			this.currentBlock = null
+			this.currentIteration = undefined
 			this.hideSpinner()
 			this.updateFooter()
 			this.tui.setFocus(this.editor)
@@ -1947,27 +2060,46 @@ export class LoongCodeTui {
 			case "run_start":
 				break
 			case "iteration_start":
+				// A new model iteration begins. The next content opens a fresh
+				// block under this number; nothing is emitted until it does, so an
+				// iteration that produces neither text nor a tool call leaves no
+				// empty block behind.
+				this.currentIteration = event.iteration
+				this.currentBlock = null
 				this.loader.setMessage("working… (esc to interrupt)")
 				this.updateFooter()
 				break
 			case "assistant_delta": {
+				const block = this.ensureBlock()
 				if (this.streaming === null) {
 					this.streaming = new Container()
 					this.streamingText = ""
-					this.chat.addChild(this.streaming)
+					// One renderer for the whole streamed message, updated in place.
+					// The delta path used to build a renderer and a theme per chunk;
+					// the renderer is now kept, so a chunk costs an `setText` rather
+					// than an allocation. (The growing text is still reparsed as it
+					// arrives — that is inherent to streaming without incremental
+					// Markdown — but no renderer is discarded per chunk.)
+					this.streamingMarkdown = new Markdown("", 0, 0, markdownTheme())
+					this.streaming.addChild(this.streamingMarkdown)
+					block.addChild(this.streaming)
 				}
 				this.streamingText += event.text
-				this.streaming.clear()
-				this.streaming.addChild(new Markdown(this.streamingText, 1, 0, markdownTheme()))
+				this.streamingMarkdown!.setText(this.streamingText)
+				// The block grew: its cached height must be re-measured next frame.
+				this.chat.invalidateChild(block)
 				break
 			}
 			case "reasoning_delta": {
+				// Internal reasoning is never shown; only a generic indicator that
+				// one is in progress, and only once per iteration.
 				if (this.reasoning === null) {
 					this.reasoning = new Container()
-					this.chat.addChild(this.reasoning)
+					this.reasoning.addChild(new Text(theme.muted("… thinking"), 0, 0))
+					const block = this.ensureBlock()
+					block.addChild(this.reasoning)
+					this.chat.invalidateChild(block)
 				}
-				this.reasoning.clear()
-				this.reasoning.addChild(new Text(`  ${ansi.gray("… thinking")}`, 0, 0))
 				break
 			}
 			case "steered":
@@ -1982,32 +2114,45 @@ export class LoongCodeTui {
 					this.streaming.clear()
 					if (text.trim().length > 0) this.streaming.addChild(assistantMessage(text))
 					this.streaming = null
+					this.streamingMarkdown = null
+					if (this.currentBlock !== null) this.chat.invalidateChild(this.currentBlock)
 				} else if (text.trim().length > 0) {
-					this.chat.addChild(assistantMessage(text))
+					const block = this.ensureBlock()
+					block.addChild(assistantMessage(text))
+					this.chat.invalidateChild(block)
 				}
 				break
 			}
 			case "tool_call": {
-				const component = new ToolExecutionComponent(event.toolCallId, event.name, event.input)
-				this.pendingTools.set(event.toolCallId, component)
-				this.chat.addChild(component)
+				const component = new ToolExecutionComponent(
+					event.toolCallId,
+					event.name,
+					event.input,
+					this.currentIteration,
+				)
+				const block = this.ensureBlock()
+				this.pendingTools.set(event.toolCallId, { component, block })
+				block.addChild(component)
+				this.chat.invalidateChild(block)
 				break
 			}
 			case "tool_progress": {
-				const component = this.pendingTools.get(event.toolCallId)
-				if (component !== undefined) {
-					component.setProgress(event.text)
+				const pending = this.pendingTools.get(event.toolCallId)
+				if (pending !== undefined) {
+					pending.component.setProgress(event.text)
+					this.chat.invalidateChild(pending.block)
 					this.tui.requestRender()
 				}
 				break
 			}
 			case "tool_result": {
-				const component = this.pendingTools.get(event.toolCallId)
-				if (component !== undefined) {
+				const pending = this.pendingTools.get(event.toolCallId)
+				if (pending !== undefined) {
 					// Duration is the runtime's; the TUI never times a tool itself.
-					component.setResult(event.ok, event.result, event.durationMs)
-					component.setExpanded(this.toolsExpanded)
+					pending.component.setResult(event.ok, event.result, event.durationMs)
+					pending.component.setExpanded(this.toolsExpanded)
 					this.pendingTools.delete(event.toolCallId)
+					this.chat.invalidateChild(pending.block)
 				}
 				break
 			}
@@ -2048,6 +2193,38 @@ export class LoongCodeTui {
 		this.tui.requestRender()
 	}
 
+	/**
+	 * The block the live run is currently filling, created on first content.
+	 *
+	 * A block is opened lazily so an iteration that emits neither text nor a
+	 * tool call never leaves an empty gutter behind, and the number attached is
+	 * the iteration that was actually in flight when the content arrived.
+	 */
+	private ensureBlock(): IterationBlock {
+		if (this.currentBlock === null) {
+			this.currentBlock = new IterationBlock(this.currentIteration)
+			this.chat.addChild(this.currentBlock)
+		}
+		return this.currentBlock
+	}
+
+	/**
+	 * Marks any tool whose result never arrived as interrupted, then forgets it.
+	 *
+	 * Only a run that terminated without delivering every result leaves entries
+	 * in `pendingTools`; a call that received its result was already removed, so
+	 * a completed tool is never relabelled here. `reason` records the actual
+	 * termination so the sweep is not applied to a run that finished normally.
+	 */
+	private settlePendingTools(reason: "aborted" | "error"): void {
+		if (this.pendingTools.size === 0) return
+		for (const pending of this.pendingTools.values()) {
+			pending.component.setInterrupted()
+			this.chat.invalidateChild(pending.block)
+		}
+		this.pendingTools.clear()
+	}
+
 	private finalizeStreaming(): void {
 		if (this.streaming !== null) {
 			this.streaming.clear()
@@ -2056,6 +2233,7 @@ export class LoongCodeTui {
 			}
 			this.streaming = null
 			this.streamingText = ""
+			this.streamingMarkdown = null
 		}
 	}
 
@@ -2097,6 +2275,8 @@ export class LoongCodeTui {
 			runBeforeRewind: this.runBeforeRewind,
 		})
 		this.footerRow1.setRow(lines.row1)
+		// The usage row is always set; whether it is shown is decided at render
+		// time from the live terminal height (`footerRow2`'s visibility).
 		this.footerRow2.setRow(lines.row2)
 		this.tui.requestRender()
 	}
@@ -2119,7 +2299,7 @@ export class LoongCodeTui {
 	private buildWarning(): Component | null {
 		const note = this.session.rewind
 		if (note === null || note.shellTurns === 0) return null
-		return new Text(`  ${ansi.yellow(shellWarningText(note))}`, 1, 0)
+		return new Text(`  ${theme.warning(shellWarningText(note))}`, 1, 0)
 	}
 
 	private async refreshFooterData(): Promise<void> {
@@ -2572,6 +2752,21 @@ export class LoongCodeTui {
 
 	private replaySession(): void {
 		for (const component of this.buildTranscript()) this.chat.addChild(component)
+		// A replayed session almost always holds messages, so the masthead's
+		// cached height (the empty-state banner) no longer applies.
+		this.invalidateHeader()
+	}
+
+	/**
+	 * Re-measures the masthead.
+	 *
+	 * The header's height is not fixed: it renders the empty-state banner while
+	 * the session holds no messages, and zero rows afterwards. That flip is not
+	 * a mutation the windowed transcript can observe, so it is announced here at
+	 * the points where the message count can change.
+	 */
+	private invalidateHeader(): void {
+		if (this.header !== null) this.transcript?.invalidateChild(this.header)
 	}
 
 	/**

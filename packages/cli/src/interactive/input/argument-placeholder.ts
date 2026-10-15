@@ -50,3 +50,26 @@ export function argumentPlaceholderFor(
   const command = commands.find(c => c.name === name)
   return command?.argumentPlaceholder
 }
+
+/**
+ * The composer's ghost text, deciding between the two cases that share the
+ * cursor: the idle placeholder while the input is empty, and the slash-command
+ * argument placeholder once a bare command has been typed. One entry point keeps
+ * them from ever both claiming the same cursor.
+ */
+export function composerGhostText(
+  state: ArgumentPlaceholderState,
+  commands: readonly ArgumentPlaceholderCommand[],
+  idlePlaceholder: string | undefined,
+): string | undefined {
+  // An empty buffer at its start is the empty input area: there is no command to
+  // hint at, so the placeholder is what guides the user.
+  const empty =
+    state.lines.length === 1 &&
+    state.cursorLine === 0 &&
+    state.cursorCol === 0 &&
+    (state.lines[0] ?? "") === ""
+  if (empty && idlePlaceholder !== undefined) return idlePlaceholder
+
+  return argumentPlaceholderFor(state, commands)
+}

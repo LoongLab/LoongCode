@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { TuiHarness } from "./testing"
 import type { SelectorItem } from "./selector"
+import { surface } from "./theme"
 
 const ITEMS: SelectorItem[] = [
 	{ value: "one", label: "model one" },
@@ -82,9 +83,12 @@ describe("Bottom-attached picker layout", () => {
 		const plain = h.screen()
 		const raw = h.rawScreen()
 		const { title, hint } = pickerSpan(plain, "Select model")
+		const marker = "\u0000"
+		const painted = surface(marker)
+		const surfaceOpen = painted.slice(0, painted.indexOf(marker))
 		for (let row = title; row <= hint; row++) {
 			expect(plain[row]).not.toContain("chat-")
-			expect(raw[row]).toContain("\x1b[48;5;236m")
+			expect(raw[row]).toContain(surfaceOpen)
 		}
 	})
 

@@ -1,4 +1,4 @@
-import { Container, ScrollView, VStack, type Component } from "@loongcode/tui"
+import { ScrollView, VStack, WindowedStack, type Component } from "@loongcode/tui"
 
 /**
  * The pieces the interactive TUI pins around its scrollable conversation.
@@ -27,8 +27,12 @@ export interface TuiLayoutParts {
 export interface TuiLayout {
 	/** Root component mounted on the fullscreen renderer. */
 	root: VStack
-	/** Scrollable container holding the header followed by the conversation. */
-	transcript: Container
+	/**
+	 * Scrollable container holding the header followed by the conversation.
+	 * Windowed, so the viewport is laid out from the logical row count and only
+	 * the visible window is rendered.
+	 */
+	transcript: WindowedStack
 	/** The application-owned conversation viewport. */
 	scroll: ScrollView
 }
@@ -70,7 +74,7 @@ export function fixedChromeRows(components: readonly Component[], width: number)
  * space instead of floating over the conversation.
  */
 export function buildTuiLayout(parts: TuiLayoutParts): TuiLayout {
-	const transcript = new Container()
+	const transcript = new WindowedStack()
 	transcript.addChild(parts.header)
 	transcript.addChild(parts.chat)
 

@@ -369,14 +369,14 @@ function footerRow1(input: FooterInput): FooterRow {
   groups.push({ parts: cwdParts })
 
   if (input.setup !== true) {
-    // A run and a manual compaction never overlap, so the precedence below is
-    // only a tie-break: an active run wins, then a manual compaction, then idle.
-    const state = input.running ? "Working" : input.compacting === true ? "Compacting" : "Idle"
-    const stateTone: FooterTone = input.running || input.compacting === true ? "warn" : "ok"
-    groups.push({ parts: [{ text: state, tone: stateTone, drop: 0 }] })
-
+    // Only an operation in progress is named: the idle case is the absence of
+    // one, and a standing `Idle` label would be a word that says nothing. The
+    // run's own progress lives above the composer, so the interrupt affordance
+    // is stated there and not repeated here.
     if (input.running) {
-      groups.push({ parts: [{ text: "Esc to interrupt", tone: "dim", drop: 0 }] })
+      groups.push({ parts: [{ text: "Working", tone: "warn", drop: 0 }] })
+    } else if (input.compacting === true) {
+      groups.push({ parts: [{ text: "Compacting", tone: "warn", drop: 0 }] })
     }
   }
 
@@ -459,7 +459,7 @@ function footerRow2(input: FooterInput): FooterRow {
         // Over budget is beyond the compaction threshold, so the runtime is
         // compacting (or has failed and will report an overflow error).
         if (input.running) groups.push({ parts: [{ text: "compacting…", tone: "warn", drop: 0 }] })
-      } else if (input.compactedMessages !== undefined) {
+      } else if (input.compactedMessages !== undefined && input.compactedMessages > 0) {
         const messages = input.compactedMessages === 1 ? "message" : "messages"
         groups.push({
           parts: [{ text: `compacted ${input.compactedMessages} ${messages}`, tone: "dim", drop: 3 }],
@@ -518,18 +518,33 @@ function cloneGroups(groups: readonly FooterGroup[]): Array<{ parts: FooterPart[
   return groups.map(g => ({ parts: g.parts.map(p => ({ ...p })) }))
 }
 
-/** Shorten every truncatable part (the path) until the row fits or it cannot. */
+/**
+ * Shorten every truncatable part (the path) until the row fits. The result is
+ * always a real tail — `…` plus at least one character — never a bare `…`,
+ * which would leave the footer starting with a meaningless mark. When even
+ * that cannot fit, the caller drops the part instead.
+ */
 function shrinkTruncatables(groups: Array<{ parts: FooterPart[] }>, width: number): void {
   for (const group of groups) {
     for (const part of group.parts) {
       if (part.truncatable !== true) continue
       const original = part.text
-      for (let keep = original.length - 1; keep >= 1; keep--) {
+      for (let keep = original.length - 1; keep >= 2; keep--) {
         if (rowWidth(groups) <= width) return
         ;(part as { text: string }).text = `…${original.slice(original.length - keep)}`
       }
-      ;(part as { text: string }).text = "…"
     }
+  }
+}
+
+/** Removes truncatable parts (and any group left empty) as a last resort. */
+function dropTruncatables(groups: Array<{ parts: FooterPart[] }>): void {
+  for (let gi = groups.length - 1; gi >= 0; gi--) {
+    const group = groups[gi]!
+    for (let pi = group.parts.length - 1; pi >= 0; pi--) {
+      if (group.parts[pi]!.truncatable === true) group.parts.splice(pi, 1)
+    }
+    if (group.parts.length === 0) groups.splice(gi, 1)
   }
 }
 
@@ -571,6 +586,11 @@ export function fitFooterRow(row: FooterRow, width: number): FooterRow {
     if (group.parts.length === 0) groups.splice(pick.group, 1)
   }
 
+  if (rowWidth(groups) <= width) return { groups }
+
+  // Last resort: the path could only be shortened to a near-empty stub, so
+  // remove it entirely rather than let the row begin with a bare `…`.
+  dropTruncatables(groups)
   if (rowWidth(groups) <= width) return { groups }
   shrinkTruncatables(groups, width)
   return { groups }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { argumentPlaceholderFor, type ArgumentPlaceholderCommand } from "./argument-placeholder"
+import { argumentPlaceholderFor, composerGhostText, type ArgumentPlaceholderCommand } from "./argument-placeholder"
 
 const COMMANDS: ArgumentPlaceholderCommand[] = [
   { name: "name", argumentPlaceholder: "Name…" },
@@ -64,5 +64,37 @@ describe("argumentPlaceholderFor", () => {
 
   test("a bare slash with only whitespace hides the ghost", () => {
     expect(argumentPlaceholderFor(at("/   "), COMMANDS)).toBeUndefined()
+  })
+})
+
+describe("composerGhostText", () => {
+  const IDLE = "Type a message…"
+
+  test("an empty input shows the idle placeholder", () => {
+    expect(composerGhostText(at(""), COMMANDS, IDLE)).toBe(IDLE)
+  })
+
+  test("a command's argument ghost takes over once a command is typed", () => {
+    expect(composerGhostText(at("/name"), COMMANDS, IDLE)).toBe("Name…")
+  })
+
+  test("real input shows neither ghost", () => {
+    expect(composerGhostText(at("fix the bug"), COMMANDS, IDLE)).toBeUndefined()
+  })
+
+  test("a cursor away from the start of an empty line is not the idle case", () => {
+    // The line is empty but the cursor is not at the start, so it is not the
+    // untouched empty input.
+    expect(composerGhostText({ lines: [""], cursorLine: 0, cursorCol: 0 }, COMMANDS, IDLE)).toBe(IDLE)
+    expect(composerGhostText({ lines: ["", ""], cursorLine: 1, cursorCol: 0 }, COMMANDS, IDLE)).toBeUndefined()
+  })
+
+  test("no idle placeholder configured falls through to the command ghost", () => {
+    expect(composerGhostText(at(""), COMMANDS, undefined)).toBeUndefined()
+    expect(composerGhostText(at("/import"), COMMANDS, undefined)).toBe("Path…")
+  })
+
+  test("a slash with trailing whitespace is not empty, so it is not the idle case", () => {
+    expect(composerGhostText(at("   "), COMMANDS, IDLE)).toBeUndefined()
   })
 })

@@ -1,6 +1,6 @@
 import { Container, Text, type Component } from "@loongcode/tui"
 import { displayWidth, truncatePlain } from "../../projection"
-import { ansi } from "./theme"
+import { ansi, theme } from "./theme"
 
 /**
  * The frame the mandatory model setup is presented in.
@@ -63,10 +63,17 @@ export class SetupPanel implements Component {
 	private input: Component | null = null
 	private content: SetupPanelContent = { heading: [], hints: "" }
 	private pendingTask: string | null = null
+	/**
+	 * Called whenever the panel's own content changes. The panel is hosted in a
+	 * windowed transcript that caches each child's height, and the panel can grow
+	 * or shrink (a new input, a longer heading), so the host is told to re-measure.
+	 */
+	onChange?: () => void
 
 	/** Replaces the step's text. */
 	setContent(content: SetupPanelContent): void {
 		this.content = content
+		this.onChange?.()
 	}
 
 	/**
@@ -78,6 +85,7 @@ export class SetupPanel implements Component {
 	 */
 	setPendingTask(task: string | null): void {
 		this.pendingTask = task
+		this.onChange?.()
 	}
 
 	/**
@@ -86,7 +94,9 @@ export class SetupPanel implements Component {
 	 * before handing it here.
 	 */
 	setInput(component: Component | null): void {
+		if (component === this.input) return
 		this.input = component
+		this.onChange?.()
 	}
 
 	invalidate(): void {
@@ -96,9 +106,9 @@ export class SetupPanel implements Component {
 
 	render(width: number): string[] {
 		const inner = Math.max(1, width - 2)
-		const lines: string[] = [ansi.gray(rule("┌", "┐", inner, TITLE))]
+		const lines: string[] = [theme.structure(rule("┌", "┐", inner, TITLE))]
 
-		const push = (text: string, style: (value: string) => string = ansi.gray): void => {
+		const push = (text: string, style: (value: string) => string = theme.muted): void => {
 			lines.push(edged(text.length === 0 ? "" : ` ${text}`, inner, style))
 		}
 
@@ -107,7 +117,7 @@ export class SetupPanel implements Component {
 		if (this.content.note !== undefined) push(this.content.note)
 		// The problem belongs to the field it names, so it is shown on the step
 		// that is asking for it rather than in the transcript.
-		if (this.content.problem !== undefined) push(this.content.problem, ansi.red)
+		if (this.content.problem !== undefined) push(this.content.problem, theme.failure)
 
 		// The input is rendered at the inner width so its own frame lines up
 		// with the panel's.
@@ -116,7 +126,7 @@ export class SetupPanel implements Component {
 		if (this.input !== null) {
 			push("")
 			for (const line of this.body.render(inner)) {
-				lines.push(ansi.gray(`│`) + line + ansi.gray(`│`))
+				lines.push(theme.structure(`│`) + line + theme.structure(`│`))
 			}
 		}
 
@@ -124,9 +134,9 @@ export class SetupPanel implements Component {
 			push(`Your task is saved: ${truncateForRow(this.pendingTask)}`)
 		}
 
-		lines.push(ansi.gray(rule("├", "┤", inner)))
+		lines.push(theme.structure(rule("├", "┤", inner)))
 		for (const hint of this.content.hints.split("\n")) push(hint)
-		lines.push(ansi.gray(rule("└", "┘", inner)))
+		lines.push(theme.structure(rule("└", "┘", inner)))
 		return lines
 	}
 }

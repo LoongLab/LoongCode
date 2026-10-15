@@ -152,24 +152,50 @@ export interface AltScreenSearchResult {
 	changed: boolean;
 }
 
+/**
+ * The scroll content a search reads, as logical rows. `revision`, when the
+ * source can report one, lets an unchanged source be reused without walking it.
+ */
+export interface SearchSource {
+	readonly rowCount: number;
+	lineAt(row: number): string;
+	revision?(): number;
+}
+
 /** Cache the searchable corpus and matches while rendered transcript lines remain unchanged. */
 export class AltScreenSearchIndex {
 	private sourceLines: string[] | undefined;
+	private sourceRevision: number | undefined;
+	private sourceRowCount: number | undefined;
 	private corpus: SearchCorpus | undefined;
 	private normalizedQuery: string | undefined;
 	private matches: AltScreenSearchMatch[] = [];
 
-	search(lines: readonly string[], query: string): AltScreenSearchResult {
-		let sourceChanged = this.sourceLines?.length !== lines.length;
-		if (!sourceChanged && this.sourceLines) {
-			for (let index = 0; index < lines.length; index++) {
-				if (this.sourceLines[index] === lines[index]) continue;
-				sourceChanged = true;
-				break;
+	search(source: SearchSource, query: string): AltScreenSearchResult {
+		const revision = source.revision?.();
+		let sourceChanged: boolean;
+		if (revision !== undefined) {
+			// A monotonic revision is the whole change signal: an unchanged
+			// transcript is reused without touching a single row.
+			sourceChanged = revision !== this.sourceRevision || this.sourceRowCount !== source.rowCount;
+		} else {
+			// No revision (a dense source): compare against the stored rows, which
+			// is the historical behaviour.
+			sourceChanged = this.sourceLines?.length !== source.rowCount;
+			if (!sourceChanged && this.sourceLines) {
+				for (let index = 0; index < source.rowCount; index++) {
+					if (this.sourceLines[index] === source.lineAt(index)) continue;
+					sourceChanged = true;
+					break;
+				}
 			}
 		}
 		if (sourceChanged || !this.corpus) {
-			this.sourceLines = Array.from(lines);
+			const lines = new Array<string>(source.rowCount);
+			for (let index = 0; index < source.rowCount; index++) lines[index] = source.lineAt(index);
+			this.sourceLines = lines;
+			this.sourceRevision = revision;
+			this.sourceRowCount = source.rowCount;
 			this.corpus = buildSearchCorpus(lines);
 		}
 

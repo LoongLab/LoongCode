@@ -259,6 +259,16 @@ export interface EditorOptions {
 	ghostTextProvider?: (state: { lines: string[]; cursorLine: number; cursorCol: number }) => string | undefined;
 	/** Style applied to ghost text. Defaults to faint. */
 	ghostTextStyle?: (text: string) => string;
+	/**
+	 * A render-only prompt drawn in a left gutter, e.g. `"❯ "`. It is shown on the
+	 * first line of the buffer and replaced by spaces on every continuation line,
+	 * so wrapped input aligns under the text rather than repeating the prompt. It
+	 * is never part of the buffer and never returned by `getText()`. The text is
+	 * wrapped to the width left after the gutter.
+	 */
+	prompt?: string;
+	/** Style applied to the prompt gutter. Defaults to plain text. */
+	promptStyle?: (text: string) => string;
 }
 
 const DEFAULT_GHOST_TEXT_STYLE = (text: string): string => `\x1b[2m${text}\x1b[22m`;
@@ -393,6 +403,10 @@ export class Editor implements Component, Focusable {
 	private ghostTextProvider?: (state: { lines: string[]; cursorLine: number; cursorCol: number }) => string | undefined;
 	private ghostTextStyle: (text: string) => string = DEFAULT_GHOST_TEXT_STYLE;
 
+	// Render-only prompt gutter, e.g. "❯ ". Never part of the buffer.
+	private prompt?: string;
+	private promptStyle: (text: string) => string = (text) => text;
+
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
 	public disableSubmit: boolean = false;
@@ -408,6 +422,41 @@ export class Editor implements Component, Focusable {
 		this.masked = options.masked === true;
 		this.ghostTextProvider = options.ghostTextProvider;
 		this.ghostTextStyle = options.ghostTextStyle ?? DEFAULT_GHOST_TEXT_STYLE;
+		this.prompt = options.prompt;
+		this.promptStyle = options.promptStyle ?? ((text) => text);
+	}
+
+	/**
+	 * Sets or clears the render-only prompt gutter (see {@link EditorOptions.prompt}).
+	 * Presentation only: the buffer, cursor position, and submit semantics are
+	 * unchanged.
+	 */
+	setPrompt(prompt: string | undefined): void {
+		if (this.prompt === prompt) return;
+		this.prompt = prompt;
+		this.tui.requestRender();
+	}
+
+	isPrompted(): boolean {
+		return this.prompt !== undefined;
+	}
+
+	/** Width of the prompt gutter, in cells. */
+	private promptGutter(): number {
+		return this.prompt === undefined ? 0 : visibleWidth(this.prompt);
+	}
+
+	/**
+	 * The gutter actually rendered at `width`: the prompt when it fits beside the
+	 * text and the reserved cursor column, otherwise `0`. A prompt that cannot fit
+	 * is dropped rather than allowed to push a row past the viewport, which the
+	 * framework rejects.
+	 */
+	private promptGutterFor(width: number, paddingX: number): number {
+		const promptWidth = this.promptGutter();
+		if (promptWidth === 0) return 0;
+		const maxGutter = Math.max(0, Math.floor(width) - paddingX * 2 - 1);
+		return promptWidth <= maxGutter ? promptWidth : 0;
 	}
 
 	/**
@@ -594,7 +643,10 @@ export class Editor implements Component, Focusable {
 	render(width: number): string[] {
 		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
-		const contentWidth = Math.max(1, width - paddingX * 2);
+		// A prompt gutter is a left inset like padding, but it carries a glyph on
+		// the first line; both reduce the width the text wraps to.
+		const gutter = this.promptGutterFor(width, paddingX);
+		const contentWidth = Math.max(1, width - paddingX * 2 - gutter);
 
 		// Layout width: with padding the cursor can overflow into it,
 		// without padding we reserve 1 column for the cursor.
@@ -606,9 +658,15 @@ export class Editor implements Component, Focusable {
 		// Layout the text
 		const layoutLines = this.layoutText(layoutWidth);
 
-		// Calculate max visible lines: 30% of terminal height, minimum 5 lines
+		// The composer's content rows are capped against the whole terminal, not
+		// just its own preference: normally 30% of the screen (min 5), but never
+		// so tall that the fixed chrome and a usable transcript no longer fit.
+		// This is what stops a large paste from consuming the terminal.
 		const terminalRows = this.tui.terminal.rows;
-		const maxVisibleLines = Math.max(5, Math.floor(terminalRows * 0.3));
+		const maxVisibleLines = Math.max(
+			3,
+			Math.min(Math.max(5, Math.floor(terminalRows * 0.3)), Math.max(3, terminalRows - 6)),
+		);
 
 		// Find the cursor line index in layoutLines
 		let cursorLineIndex = layoutLines.findIndex((line) => line.hasCursor);
@@ -642,7 +700,8 @@ export class Editor implements Component, Focusable {
 		// autocomplete (e.g. slash-command menu) is visible.
 		const emitCursorMarker = this.focused;
 
-		for (const layoutLine of visibleLines) {
+		for (let visibleIndex = 0; visibleIndex < visibleLines.length; visibleIndex++) {
+			const layoutLine = visibleLines[visibleIndex]!;
 			// Masked mode replaces every code unit with `*`, preserving the
 			// code-unit offsets the cursor logic below slices on, so the cursor
 			// still points at the same position while nothing is revealed.
@@ -678,9 +737,21 @@ export class Editor implements Component, Focusable {
 					const ghostText = ghost !== undefined ? truncateToWidth(ghost, Math.max(0, ghostWidthBudget), "") : "";
 					if (ghostText.length > 0) {
 						const realText = before.replace(/[ \t]+$/, "");
-						const separator = emitCursorMarker ? "\x1b[7m \x1b[0m" : " ";
-						displayText = realText + marker + separator + this.ghostTextStyle(ghostText);
-						lineVisibleWidth = visibleWidth(realText) + 1 + visibleWidth(ghostText);
+						if (realText.length === 0) {
+							// Empty input: the placeholder begins at the text column and
+							// the cursor sits on its first cell, so typing the first
+							// character does not shift the line.
+							const graphemes = [...this.segment(ghostText, "grapheme")].map((g) => g.segment);
+							const [first = "", ...rest] = graphemes;
+							displayText = emitCursorMarker
+								? `${marker}\x1b[7m${first}\x1b[0m${this.ghostTextStyle(rest.join(""))}`
+								: this.ghostTextStyle(ghostText);
+							lineVisibleWidth = visibleWidth(ghostText);
+						} else {
+							const separator = emitCursorMarker ? "\x1b[7m \x1b[0m" : " ";
+							displayText = realText + marker + separator + this.ghostTextStyle(ghostText);
+							lineVisibleWidth = visibleWidth(realText) + 1 + visibleWidth(ghostText);
+						}
 					} else {
 						// Cursor is at the end - add highlighted space
 						const cursor = "\x1b[7m \x1b[0m";
@@ -698,8 +769,15 @@ export class Editor implements Component, Focusable {
 			const padding = " ".repeat(Math.max(0, contentWidth - lineVisibleWidth));
 			const lineRightPadding = cursorInPadding ? rightPadding.slice(1) : rightPadding;
 
+			// The prompt glyph sits on the buffer's first line; every continuation
+			// line keeps the same indent so wrapped input aligns under the text.
+			const gutterText =
+				visibleIndex === 0 && this.scrollOffset === 0 && gutter > 0
+					? this.promptStyle(this.prompt!)
+					: " ".repeat(gutter);
+
 			// Render the line (no side borders, just horizontal lines above and below)
-			result.push(`${leftPadding}${displayText}${padding}${lineRightPadding}`);
+			result.push(`${leftPadding}${gutterText}${displayText}${padding}${lineRightPadding}`);
 		}
 
 		// Render bottom border (with scroll indicator if more content below)
@@ -711,10 +789,12 @@ export class Editor implements Component, Focusable {
 		if (this.autocompleteState && this.autocompleteList && !this.masked) {
 			const autocompleteResult = this.autocompleteList.render(contentWidth);
 			this.renderedAutocompleteHeight = autocompleteResult.length;
+			// The menu sits under the text column, clear of the prompt gutter.
+			const menuIndent = `${leftPadding}${" ".repeat(gutter)}`;
 			for (const line of autocompleteResult) {
 				const lineWidth = visibleWidth(line);
 				const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
-				result.push(`${leftPadding}${line}${linePadding}${rightPadding}`);
+				result.push(`${menuIndent}${line}${linePadding}${rightPadding}`);
 			}
 		}
 
@@ -731,10 +811,11 @@ export class Editor implements Component, Focusable {
 		) {
 			const maxPadding = Math.max(0, Math.floor((event.width - 1) / 2));
 			const paddingX = Math.min(this.paddingX, maxPadding);
-			const contentWidth = Math.max(1, event.width - paddingX * 2);
+			const gutter = this.promptGutterFor(event.width, paddingX);
+			const contentWidth = Math.max(1, event.width - paddingX * 2 - gutter);
 			const result = this.autocompleteList.handleMouse?.({
 				...event,
-				x: event.x - paddingX,
+				x: event.x - paddingX - gutter,
 				y: event.y - autocompleteStartRow,
 				width: contentWidth,
 				height: this.renderedAutocompleteHeight,
@@ -758,7 +839,8 @@ export class Editor implements Component, Focusable {
 		const chunk = logicalLine.slice(visualLine.startCol, chunkEnd);
 		const maxPadding = Math.max(0, Math.floor((event.width - 1) / 2));
 		const paddingX = Math.min(this.paddingX, maxPadding);
-		const targetColumn = Math.max(0, event.x - paddingX);
+		const gutter = this.promptGutterFor(event.width, paddingX);
+		const targetColumn = Math.max(0, event.x - paddingX - gutter);
 		let visibleColumn = 0;
 		let targetIndex = chunk.length;
 		let lastGraphemeIndex = 0;

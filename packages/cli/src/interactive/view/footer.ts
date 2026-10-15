@@ -1,5 +1,5 @@
 import type { Component } from "@loongcode/tui"
-import { ansi } from "./theme"
+import { theme } from "./theme"
 import {
   displayWidth,
   fitFooterRow,
@@ -13,13 +13,13 @@ import {
 function paint(part: FooterPart): string {
   switch (part.tone) {
     case "warn":
-      return ansi.yellow(part.text)
+      return theme.warning(part.text)
     case "ok":
-      return ansi.green(part.text)
+      return theme.success(part.text)
     case "alert":
-      return ansi.red(part.text)
+      return theme.failure(part.text)
     case "dim":
-      return ansi.gray(part.text)
+      return theme.muted(part.text)
   }
 }
 
@@ -36,6 +36,15 @@ const SEPARATOR = " · "
 export class FooterLineView implements Component {
   private row: FooterRow | undefined
 
+  /**
+   * Whether this row is shown, evaluated on every render. A row whose visibility
+   * depends on terminal height must decide it here, at paint time — not when the
+   * row is set — so a resize alone (which re-renders but does not call the
+   * application's footer update) retracts or restores it and the conversation
+   * regains or yields the row immediately.
+   */
+  constructor(private readonly visible: () => boolean = () => true) {}
+
   setRow(row: FooterRow | undefined): void {
     this.row = row
   }
@@ -44,7 +53,7 @@ export class FooterLineView implements Component {
   invalidate(): void {}
 
   render(width: number): string[] {
-    if (this.row === undefined) return []
+    if (this.row === undefined || !this.visible()) return []
     if (width <= 0) return [""]
 
     const lead = width >= 2 ? " " : ""
@@ -57,7 +66,7 @@ export class FooterLineView implements Component {
     // an over-wide line).
     const content =
       displayWidth(plain) <= avail
-        ? fitted.groups.map(group => group.parts.map(paint).join(" ")).join(ansi.gray(SEPARATOR))
+        ? fitted.groups.map(group => group.parts.map(paint).join(" ")).join(theme.structure(SEPARATOR))
         : truncatePlain(plain, avail)
 
     const visible = Math.min(displayWidth(plain), avail)

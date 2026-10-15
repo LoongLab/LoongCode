@@ -10,16 +10,25 @@ function items(): Array<{ value: string; label: string; description?: string }> 
 	]
 }
 
+/** The panel background's open/close codes, derived from the live theme. */
+function surfaceCodes(): { open: string; close: string } {
+	const marker = "\u0000"
+	const painted = surface(marker)
+	const at = painted.indexOf(marker)
+	return { open: painted.slice(0, at), close: painted.slice(at + marker.length) }
+}
+
 describe("Selector opaque surface", () => {
 	test("paints the surface background across every line at full width", () => {
+		const { open, close } = surfaceCodes()
 		const selector = new Selector("Select model", items())
 		for (const width of [80, 60, 40]) {
 			const lines = selector.render(width)
 			expect(lines.length).toBeGreaterThan(0)
 			for (const line of lines) {
 				// The whole padded line carries the panel background.
-				expect(line.startsWith("\x1b[48;5;236m")).toBe(true)
-				expect(line.endsWith("\x1b[49m")).toBe(true)
+				expect(line.startsWith(open)).toBe(true)
+				expect(line.endsWith(close)).toBe(true)
 				// It is padded to the full overlay width, so no cell lacks a background.
 				expect(stripSequences(line).length).toBe(width)
 			}
@@ -27,12 +36,12 @@ describe("Selector opaque surface", () => {
 	})
 
 	test("the surface is the shared panel color, not a new one", () => {
-		expect(surface("x")).toBe("\x1b[48;5;236mx\x1b[49m")
+		const { open, close } = surfaceCodes()
 		const lines = new Selector("t", items()).render(30)
 		// Every line opens and closes the shared panel background.
 		for (const line of lines) {
-			expect(line.startsWith("\x1b[48;5;236m")).toBe(true)
-			expect(line.endsWith("\x1b[49m")).toBe(true)
+			expect(line.startsWith(open)).toBe(true)
+			expect(line.endsWith(close)).toBe(true)
 		}
 	})
 

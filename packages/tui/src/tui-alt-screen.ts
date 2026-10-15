@@ -484,11 +484,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private scrollToPrompt(direction: -1 | 1): void {
 		if (!this.currentLayout) return;
 		const scrollView = this.getPrimaryScrollView();
-		const lines = getScrollViewBox(this.currentLayout, scrollView)?.scrollContentLines;
-		if (!lines) return;
+		const content = getScrollViewBox(this.currentLayout, scrollView)?.scrollContent;
+		if (!content) return;
 
-		for (let row = scrollView.scrollTop + direction; row >= 0 && row < lines.length; row += direction) {
-			if (!OSC133_PROMPT_START.test(lines[row] ?? "")) continue;
+		for (let row = scrollView.scrollTop + direction; row >= 0 && row < content.rowCount; row += direction) {
+			if (!OSC133_PROMPT_START.test(content.lineAt(row))) continue;
 			scrollView.scrollTo(row);
 			this.requestRender();
 			return;
@@ -575,8 +575,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!search) return false;
 		const scrollView = layout.primaryScrollView ?? this.implicitScrollView;
 		const box = getScrollViewBox(layout, scrollView);
-		const lines = box?.scrollContentLines;
-		if (!lines || !search.query.trim()) {
+		const content = box?.scrollContent;
+		if (!content || !search.query.trim()) {
 			search.matches = [];
 			search.selectedIndex = -1;
 			search.selectedKey = undefined;
@@ -586,7 +586,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		}
 
 		const shouldRevealSelection = search.selectionMode !== "retain";
-		const result = search.index.search(lines, search.query);
+		const result = search.index.search(content, search.query);
 		const matches = result.matches;
 		search.matches = matches;
 		if (!result.changed && search.selectionMode === "retain") return false;
@@ -1128,7 +1128,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		);
 		if (visibleBottom < visibleTop) return undefined;
 		const pointerRow = Math.max(visibleTop, Math.min(visibleBottom, y));
-		const maxContentRow = Math.max(0, (box.scrollContentLines?.length ?? 1) - 1);
+		const maxContentRow = Math.max(0, (box.scrollContent?.rowCount ?? 1) - 1);
 		return {
 			row: Math.max(0, Math.min(maxContentRow, scrollView.scrollTop + pointerRow - box.rect.y)),
 			col: Math.max(0, Math.min(box.rect.width - 1, x - box.rect.x)),
@@ -1149,8 +1149,8 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 
 	private getSelectionSourceLine(point: SelectionPoint): string {
 		if (point.scrollView && this.currentLayout) {
-			const lines = getScrollViewBox(this.currentLayout, point.scrollView)?.scrollContentLines;
-			if (lines) return lines[point.row] ?? "";
+			const content = getScrollViewBox(this.currentLayout, point.scrollView)?.scrollContent;
+			if (content) return content.lineAt(point.row);
 		}
 		return this.previousScreen[point.row] ?? "";
 	}
@@ -1421,16 +1421,17 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 	private getActiveSelectionText(): string | undefined {
 		const selection = this.getSelectionBounds();
 		if (!selection) return undefined;
-		let sourceLines: readonly string[] = this.previousScreen;
+		let lineAt: (row: number) => string = (row) => this.previousScreen[row] ?? "";
 		if (selection.start.scrollView) {
 			if (!this.currentLayout) return undefined;
 			const box = getScrollViewBox(this.currentLayout, selection.start.scrollView);
-			if (!box?.scrollContentLines) return undefined;
-			sourceLines = box.scrollContentLines;
+			if (!box?.scrollContent) return undefined;
+			const content = box.scrollContent;
+			lineAt = (row) => content.lineAt(row);
 		}
 		const lines: string[] = [];
 		for (let row = selection.start.row; row <= selection.end.row; row++) {
-			const line = sourceLines[row] ?? "";
+			const line = lineAt(row);
 			const columns = this.getSelectionColumns(line, row, selection);
 			lines.push(
 				stripTerminalSequences(
