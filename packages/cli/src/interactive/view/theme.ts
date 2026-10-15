@@ -10,6 +10,17 @@ import { getTerminalColorMode } from "@loongcode/tui"
  * place palette decisions live, so a scheme change or a weaker terminal is
  * handled here rather than at every call site.
  *
+ * The identity is monochrome: the dark and light ramps are greys, and hierarchy
+ * is carried by luminance level, weight and position rather than hue. The one
+ * deliberate exception is *diff semantics* — added lines are green and removed
+ * lines are red — which is why `diffAdd`/`diffRemove` are their own roles and
+ * are never aliased to `success`/`failure` (those also paint the execution-state
+ * glyphs, which stay monochrome). The `+`/`-` markers are part of the rendered
+ * line, so a diff is still readable with no colour (and under `NO_COLOR`).
+ *
+ * `primary` carries no colour, so the canvas and the primary foreground stay the
+ * terminal's own; the app paints no transcript background.
+ *
  * State is module-level and mutable because a render calls these functions
  * lazily and the scheme can change under a live session (a terminal theme
  * switch) without rebuilding the component tree.
@@ -36,10 +47,16 @@ export type Style = (text: string) => string
  * empty string means "default color at this depth". A role with no color at the
  * active depth renders as plain text, which is the safe default: text stays
  * readable even where color is unavailable.
+ *
+ * `fgRgb` is an exact 24-bit foreground used only on a truecolor terminal; where
+ * it is absent the `fg256` index is resolved through the xterm cube, as before.
+ * Only the diff roles set it, because their colours are the one place the design
+ * asks for an exact value rather than the nearest index.
  */
 interface RoleSpec {
 	readonly fg16?: string
 	readonly fg256?: number
+	readonly fgRgb?: readonly [number, number, number]
 	readonly bg16?: string
 	readonly bg256?: number
 	readonly weight?: "bold" | "dim"
@@ -66,49 +83,62 @@ export type RoleName =
 	| "surface"
 
 /**
- * The two scheme palettes. Indices are chosen for readable contrast against a
- * typical dark or light terminal background; they are the single place a hue is
- * decided. An unknown scheme falls back to `dark`.
+ * The two scheme palettes.
+ *
+ * Both are monochrome ramps; the indices are chosen for readable contrast
+ * against a typical dark or light terminal background. `diffAdd`/`diffRemove`
+ * are the sole exception and carry the only hue in the interface. An unknown
+ * scheme falls back to `dark`.
+ *
+ * At 256 colours the greys are the nearest index to the design value (a max
+ * deviation of ~5/channel, imperceptible); the diff roles additionally carry an
+ * exact `fgRgb` for truecolor terminals, and a plain `fg16` for 16-colour ones.
  */
 const PALETTES: Record<SchemeName, Record<RoleName, RoleSpec>> = {
+	// Monochrome ramp on a dark canvas: max emphasis (231) > body (188) >
+	// secondary (247) > muted (243) > faint (241) > structure (238).
 	dark: {
 		primary: {},
-		secondary: { fg256: 250, fg16: "" },
-		muted: { fg256: 245, fg16: "2" },
-		faint: { fg256: 240, fg16: "2" },
-		accent: { fg256: 79, fg16: "36" },
-		accentBold: { fg256: 79, fg16: "36", weight: "bold" },
-		success: { fg256: 78, fg16: "32" },
-		failure: { fg256: 203, fg16: "31" },
-		failureBold: { fg256: 203, fg16: "31", weight: "bold" },
-		warning: { fg256: 215, fg16: "33" },
-		running: { fg256: 215, fg16: "33" },
-		structure: { fg256: 239, fg16: "2" },
-		diffAdd: { fg256: 78, fg16: "32" },
-		diffRemove: { fg256: 203, fg16: "31" },
-		selected: { fg256: 79, fg16: "36", weight: "bold" },
-		border: { fg256: 239, fg16: "2" },
-		prompt: { fg256: 79, fg16: "36" },
-		surface: { bg256: 236, bg16: "100" },
+		secondary: { fg256: 247, fg16: "37" },
+		muted: { fg256: 243, fg16: "2" },
+		faint: { fg256: 241, fg16: "2" },
+		accent: { fg256: 231, fg16: "97" },
+		accentBold: { fg256: 231, fg16: "97", weight: "bold" },
+		success: { fg256: 188, fg16: "97" },
+		failure: { fg256: 231, fg16: "97" },
+		failureBold: { fg256: 231, fg16: "97", weight: "bold" },
+		warning: { fg256: 231, fg16: "97" },
+		running: { fg256: 231, fg16: "97" },
+		structure: { fg256: 238, fg16: "2" },
+		// The design's diff colours, exact on truecolor (#6FCF97 / #E06C75).
+		diffAdd: { fg256: 78, fg16: "32", fgRgb: [111, 207, 151] },
+		diffRemove: { fg256: 168, fg16: "31", fgRgb: [224, 108, 117] },
+		selected: { fg256: 231, fg16: "97", weight: "bold" },
+		border: { fg256: 238, fg16: "2" },
+		prompt: { fg256: 231, fg16: "97" },
+		surface: { bg256: 235, bg16: "100" },
 	},
+	// Monochrome ramp on a light canvas: max emphasis (234) > body (236) >
+	// secondary (238) > muted (242) > faint (247) > structure (250).
 	light: {
 		primary: {},
 		secondary: { fg256: 238, fg16: "" },
 		muted: { fg256: 242, fg16: "2" },
 		faint: { fg256: 247, fg16: "2" },
-		accent: { fg256: 29, fg16: "36" },
-		accentBold: { fg256: 29, fg16: "36", weight: "bold" },
-		success: { fg256: 28, fg16: "32" },
-		failure: { fg256: 124, fg16: "31" },
-		failureBold: { fg256: 124, fg16: "31", weight: "bold" },
-		warning: { fg256: 130, fg16: "33" },
-		running: { fg256: 130, fg16: "33" },
+		accent: { fg256: 234, fg16: "30" },
+		accentBold: { fg256: 234, fg16: "30", weight: "bold" },
+		success: { fg256: 236, fg16: "30" },
+		failure: { fg256: 234, fg16: "30" },
+		failureBold: { fg256: 234, fg16: "30", weight: "bold" },
+		warning: { fg256: 234, fg16: "30" },
+		running: { fg256: 234, fg16: "30" },
 		structure: { fg256: 250, fg16: "2" },
-		diffAdd: { fg256: 28, fg16: "32" },
-		diffRemove: { fg256: 124, fg16: "31" },
-		selected: { fg256: 29, fg16: "36", weight: "bold" },
+		// Dark green/red: the same diff semantics, readable on a light canvas.
+		diffAdd: { fg256: 22, fg16: "32", fgRgb: [31, 122, 77] },
+		diffRemove: { fg256: 124, fg16: "31", fgRgb: [163, 38, 30] },
+		selected: { fg256: 234, fg16: "30", weight: "bold" },
 		border: { fg256: 250, fg16: "2" },
-		prompt: { fg256: 29, fg16: "36" },
+		prompt: { fg256: 234, fg16: "30" },
 		surface: { bg256: 253, bg16: "47" },
 	},
 }
@@ -176,11 +206,18 @@ function indexToRgb(index: number): readonly [number, number, number] {
 
 function fgCode(spec: RoleSpec): string | undefined {
 	if (currentDepth === "16") return spec.fg16 !== undefined && spec.fg16 !== "" ? spec.fg16 : undefined
-	if (spec.fg256 !== undefined) {
-		if (currentDepth === "truecolor") {
+	if (currentDepth === "truecolor") {
+		// An exact 24-bit value wins; otherwise the 256 index is resolved through
+		// the xterm cube. Only the diff roles carry an exact value.
+		if (spec.fgRgb !== undefined) {
+			const [r, g, b] = spec.fgRgb
+			return `38;2;${r};${g};${b}`
+		}
+		if (spec.fg256 !== undefined) {
 			const [r, g, b] = indexToRgb(spec.fg256)
 			return `38;2;${r};${g};${b}`
 		}
+	} else if (spec.fg256 !== undefined) {
 		return `38;5;${spec.fg256}`
 	}
 	return spec.fg16 !== undefined && spec.fg16 !== "" ? spec.fg16 : undefined

@@ -4,6 +4,37 @@ All notable changes to LoongCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-16
+
+An identity release. The interface is monochrome: hierarchy now comes from
+typography, spacing and luminance rather than hue. The one deliberate exception
+is diff semantics, where additions stay green and removals stay red.
+
+### Changed
+
+- **The palette is greyscale.** The dark and light ramps are now neutral, and the
+  two chromatic roles that used to carry identity — the teal `accent` and the
+  amber/red state colours — are replaced by luminance levels. `accent` is the
+  maximum-emphasis level, `success` settles into the reading surface, and
+  `warning`/`running`/`failure` are the remaining brightness steps. Nothing in
+  the interface carries a brand hue, and the execution-state glyphs (`⠿ ✓ ✗ ⊘`)
+  stay monochrome.
+- **Hunk headers in a diff render on the monochrome ramp.** `@@` headers were
+  `accent`; they are now `secondary`, so only changed lines carry colour.
+- The composer's border is drawn with `muted` rather than `faint`, so the input
+  frame stays legible against the darker canvas.
+
+### Added
+
+- **Dedicated diff colours, exact on capable terminals.** `diffAdd` and
+  `diffRemove` are their own semantic roles — never aliased to `success` /
+  `failure`, which also paint the execution-state glyphs — and resolve to the
+  exact 24-bit values `#6FCF97` and `#E06C75` on a truecolor terminal. At 256
+  and 16 colours they fall back to the nearest index and the corresponding
+  16-colour code via the existing mechanism. The `+`/`-` markers remain part of
+  the rendered line, so a diff is still readable with no colour at all, and
+  `NO_COLOR` strips the diff colours along with everything else.
+
 ## [0.2.0] - 2026-10-16
 
 A terminal-interface release. The interactive view is rebuilt around an

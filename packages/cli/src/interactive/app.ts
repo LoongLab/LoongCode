@@ -1052,7 +1052,7 @@ export class LoongCodeTui {
 		const editor = new Editor(
 			this.tui,
 			{
-				borderColor: (text) => theme.faint(text),
+				borderColor: (text) => theme.muted(text),
 				selectList: {
 					selectedPrefix: (text) => theme.selected(text),
 					selectedText: (text) => ansi.bold(text),

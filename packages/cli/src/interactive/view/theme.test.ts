@@ -87,6 +87,47 @@ describe("theme roles", () => {
 		expect(darkMuted).not.toBe(lightMuted)
 	})
 
+	test("the diff roles stay distinct from the monochrome state roles", () => {
+		// Diff additions/removals are the one deliberate colour exception, so they
+		// must never be aliased to `success`/`failure` — those also paint the
+		// execution-state glyphs and the rest of the interface, which is
+		// monochrome. This is the invariant that keeps a green tick from becoming
+		// a brand accent.
+		for (const scheme of SCHEMES) {
+			setThemeScheme(scheme)
+			for (const depth of ["256", "truecolor"] as const) {
+				setThemeColorDepth(depth)
+				expect(theme.diffAdd("\u0000")).not.toBe(theme.success("\u0000"))
+				expect(theme.diffRemove("\u0000")).not.toBe(theme.failure("\u0000"))
+			}
+		}
+	})
+
+	test("truecolor diff roles emit their exact 24-bit design colours", () => {
+		setThemeColorDepth("truecolor")
+		setThemeScheme("dark")
+		expect(theme.diffAdd("\u0000")).toContain("38;2;111;207;151")
+		expect(theme.diffRemove("\u0000")).toContain("38;2;224;108;117")
+	})
+
+	test("the diff roles fall back without truecolor: a 256 index, or a 16-color code", () => {
+		setThemeScheme("dark")
+		setThemeColorDepth("256")
+		expect(theme.diffAdd("\u0000")).toContain("38;5;")
+		expect(theme.diffRemove("\u0000")).toContain("38;5;")
+		setThemeColorDepth("16")
+		for (const params of codesFor(theme.diffAdd)) expect(params).not.toContain(5)
+		for (const params of codesFor(theme.diffRemove)) expect(params).not.toContain(5)
+	})
+
+	test("NO_COLOR strips the diff colours too, leaving the +/- markers to carry meaning", () => {
+		setThemeMonochrome(true)
+		setThemeColorDepth("truecolor")
+		setThemeScheme("dark")
+		expect(theme.diffAdd("\u0000")).toBe("\u0000")
+		expect(theme.diffRemove("\u0000")).toBe("\u0000")
+	})
+
 	test("monochrome collapses every role to plain text", () => {
 		setThemeMonochrome(true)
 		for (const role of ROLES) {

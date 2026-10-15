@@ -372,7 +372,9 @@ function classify(lines: readonly string[]): ResultKind {
 }
 
 function diffLineStyle(line: string): StyleFn {
-	if (line.startsWith("@@")) return theme.accent
+	// A hunk header is metadata, so it stays on the monochrome ramp; only the
+	// `+`/`-` change lines carry the diff colour exception.
+	if (line.startsWith("@@")) return theme.secondary
 	if (line.startsWith("+")) return theme.diffAdd
 	if (line.startsWith("-")) return theme.diffRemove
 	return theme.muted
