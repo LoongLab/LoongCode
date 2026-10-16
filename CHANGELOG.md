@@ -4,6 +4,36 @@ All notable changes to LoongCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-16
+
+An autocomplete release. Slash-command discovery now matches the way people
+remember commands — by any part of the name, in any case — and says so plainly
+when a query matches nothing.
+
+### Changed
+
+- **Slash matching is case-insensitive and matches substrings, not just
+  prefixes.** `/MO` finds `/model`, and `/ode` finds it too, where a prefix match
+  would have found neither. No other completion context is affected: `@` file
+  completion is unchanged.
+- **Closer matches rank first.** An exact command name is listed ahead of names
+  that begin with the query, which are listed ahead of names that merely contain
+  it; declaration order breaks ties, so the surface stays stable and predictable.
+
+### Added
+
+- **An explicit no-match row.** A slash query that matches nothing used to close
+  the menu silently, leaving a typo invisible until Enter failed. The composer now
+  keeps the list open and reports `No matching commands "<query>"` in the `muted`
+  role, so an unmatched query reads as information rather than an error. Editing
+  the query back into a match restores the suggestions.
+
+### Unchanged
+
+- Tab inserts the selected completion without submitting; Enter accepts and
+  submits it; Escape dismisses the menu and leaves the input exactly as typed.
+  The no-match row follows the same rules, so `Esc` there preserves the query too.
+
 ## [0.2.1] - 2026-10-16
 
 An identity release. The interface is monochrome: hierarchy now comes from
