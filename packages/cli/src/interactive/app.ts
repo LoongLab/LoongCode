@@ -1058,7 +1058,9 @@ export class LoongCodeTui {
 					selectedText: (text) => ansi.bold(text),
 					description: (text) => theme.muted(text),
 					scrollInfo: (text) => theme.faint(text),
-					noMatch: (text) => theme.failure(text),
+					// Informational, not a failure: an unmatched slash query is a
+					// normal state, so it never reads as an error.
+					noMatch: (text) => theme.muted(text),
 				},
 			},
 			{ ghostTextStyle: (text) => theme.muted(text) },

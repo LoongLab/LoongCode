@@ -34,6 +34,8 @@ export interface SelectListTruncatePrimaryContext {
 export interface SelectListLayoutOptions {
 	minPrimaryColumnWidth?: number;
 	maxPrimaryColumnWidth?: number;
+	/** Overrides the empty-result row's text, e.g. to quote the user's query. */
+	noMatchText?: string;
 	truncatePrimary?: (context: SelectListTruncatePrimaryContext) => string;
 }
 
@@ -77,7 +79,7 @@ export class SelectList implements Component {
 
 		// If no items match filter, show message
 		if (this.filteredItems.length === 0) {
-			lines.push(this.theme.noMatch("  No matching commands"));
+			lines.push(this.theme.noMatch(`  ${this.layout.noMatchText ?? "No matching commands"}`));
 			return lines;
 		}
 
@@ -143,6 +145,8 @@ export class SelectList implements Component {
 	}
 
 	handleInput(keyData: string): void {
+		// An empty result has nothing to navigate or confirm; its owner dismisses it.
+		if (this.filteredItems.length === 0) return;
 		const kb = getKeybindings();
 		// Up arrow - wrap to bottom when at top
 		if (kb.matches(keyData, "tui.select.up")) {

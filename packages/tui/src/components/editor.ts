@@ -2410,7 +2410,9 @@ export class Editor implements Component, Focusable {
 		prefix: string,
 		items: Array<{ value: string; label: string; description?: string }>,
 	): SelectList {
-		const layout = prefix.startsWith("/") ? SLASH_COMMAND_SELECT_LIST_LAYOUT : undefined;
+		const layout = prefix.startsWith("/")
+			? { ...SLASH_COMMAND_SELECT_LIST_LAYOUT, noMatchText: `No matching commands "${prefix}"` }
+			: undefined;
 		const list = new SelectList(items, this.autocompleteMaxVisible, this.theme.selectList, layout);
 		list.onSelect = (selected) => {
 			if (!this.autocompleteProvider) return;
@@ -2559,7 +2561,16 @@ export class Editor implements Component, Focusable {
 
 		this.autocompleteAbort = undefined;
 
-		if (!suggestions || !Array.isArray(suggestions.items) || suggestions.items.length === 0) {
+		if (!suggestions || !Array.isArray(suggestions.items)) {
+			this.cancelAutocomplete();
+			this.tui.requestRender();
+			return;
+		}
+
+		// A slash query with no matches keeps the autocomplete interaction open so
+		// the list can render its explicit no-match row. Every other context (file
+		// and attachment completion) closes the menu, exactly as before.
+		if (suggestions.items.length === 0 && !suggestions.prefix.startsWith("/")) {
 			this.cancelAutocomplete();
 			this.tui.requestRender();
 			return;

@@ -61,7 +61,12 @@ describe("live prompt-template discovery", () => {
       expect(listPromptTemplates(dir).map(t => t.name)).not.toContain("fresh")
       expect(resolveSlashInput(dir, "fresh")).toEqual({ kind: "unknown" })
       const afterRemoval = await provider.getSuggestions(["/fr"], 0, 3)
-      expect(afterRemoval).toBeNull()
+      // A slash query with no match stays an active interaction carrying an empty
+      // result, so the composer can render its explicit no-match row instead of
+      // the menu silently closing. The removed template is no longer offered.
+      expect(afterRemoval).not.toBeNull()
+      expect(afterRemoval!.items).toEqual([])
+      expect(afterRemoval!.prefix).toBe("/fr")
     })
   })
 
